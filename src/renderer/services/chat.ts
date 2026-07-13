@@ -1,0 +1,1083 @@
+// Chat service for AI conversations (OpenAI, Anthropic, Ollama, etc.)
+import { getPreference } from './sqlite';
+import { ConversationMessage } from '../types';
+import { resolveChat, loadPreferences } from './config';
+
+// Default prompt templates (same as in SettingsPage)
+// Canonical prompt templates. Exported so the Settings UI can render
+// the same text the LLM actually sees — preventing the "I edited the
+// prompt but the preview still shows the old one" DRY bug.
+export const DEFAULT_PROMPTS = {
+  natural: `You are having a spoken conversation. Your response will be read aloud by a text-to-speech voice, so it must sound like natural speech.
+
+HARD RULES — these are absolute, not suggestions:
+- Your response is 1-3 short sentences. Never longer.
+- Never use bullet points, numbered lists, headings, or markdown.
+- Never use stage directions like *smiles* or [pause].
+- Never say "Sure!" or "Certainly!" or any preamble — start with the actual reply.
+- Never re-state what the user just said.
+- Never narrate your own behavior ("I'll ask you a question now...").
+- Ask at most ONE question per turn, and only if it moves the conversation forward.
+- No em-dashes, no semicolons — write the way people talk.
+- If the user asks something simple, give a simple answer. Do not explain more than asked.
+
+You are the conversation partner, not an assistant explaining things. Speak like a human in the room.`,
+  educational: `As a conversation partner, please:
+1. Ask one thoughtful question at a time
+2. Provide context or examples when helpful
+3. Gently correct language errors by rephrasing correctly
+4. Encourage elaboration on responses
+5. Offer vocabulary alternatives when appropriate`,
+  concise: `Keep the conversation extremely concise:
+1. Ask only ONE short question at a time
+2. Use simple, everyday language
+3. Keep responses under 2 sentences
+4. Avoid explanations or elaborations
+5. Focus on the essential information only`,
+  business: `Maintain a professional business conversation by:
+1. Asking focused, relevant business questions one at a time
+2. Using appropriate business terminology and formal language
+3. Keeping exchanges concise and purposeful
+4. Following standard business etiquette
+5. Staying on topic and goal-oriented`,
+  supportive: `Be a supportive conversation partner:
+1. Ask one encouraging question at a time
+2. Celebrate attempts and progress
+3. Offer gentle hints if the user struggles
+4. Use positive reinforcement
+5. Keep a patient, understanding tone`
+};
+
+// Credential-bearing headers must never reach the console — devtools is
+// often open during support sessions and screenshots end up in issues.
+const SENSITIVE_HEADERS = ['authorization', 'x-api-key'];
+function redactAuthHeaders(headers: HeadersInit): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) =>
+      SENSITIVE_HEADERS.includes(key.toLowerCase()) ? [key, '***'] : [key, value]
+    )
+  );
+}
+
+// Unified interfaces for different providers
+interface ChatCompletionRequest {
+  model: string;
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+  }>;
+  temperature?: number;
+  max_tokens?: number;
+  stream?: boolean;
+}
+
+interface OllamaGenerateRequest {
+  model: string;
+  prompt: string;
+  system?: string;
+  stream?: boolean;
+  context?: number[];
+  options?: {
+    temperature?: number;
+    top_p?: number;
+    seed?: number;
+    num_predict?: number;
+  };
+}
+
+interface OllamaGenerateResponse {
+  model: string;
+  created_at: string;
+  response: string;
+  done: boolean;
+  context?: number[];
+  total_duration?: number;
+  eval_count?: number;
+}
+
+// Canonical hosted-Provider URLs and env-var names now live in config.ts —
+// the single source of Provider defaults. Re-exported here so existing
+// importers (StatusFooter, SettingsPage) keep working unchanged.
+export { CHAT_PROVIDER_URLS, CHAT_PROVIDER_ENV_VARS } from './config';
+
+export type ChatProvider = 'anthropic' | 'openai' | 'ollama' | 'groq' | 'gemini' | 'custom';
+
+// Resolves a stored API key. If the value is an `env:VAR_NAME`
+// reference, hops through the main process to read the real shell
+// environment variable — renderer's `process.env` is a sandboxed
+// polyfill with no visibility into the environment Electron was
+// launched from. Returns an empty string if the env var is unset so
+// callers can still decide whether to send an Authorization header.
+export async function resolveApiKey(storedValue: string | null | undefined): Promise<string> {
+  if (!storedValue) return '';
+  if (!storedValue.startsWith('env:')) return storedValue;
+  const envVarName = storedValue.substring(4).trim();
+  if (!envVarName) return '';
+  try {
+    const resolved = await window.electronAPI.app.getEnvVar(envVarName);
+    return resolved || '';
+  } catch (err) {
+    console.warn(`resolveApiKey: failed to read env var ${envVarName}:`, err);
+    return '';
+  }
+}
+
+// The four getters below delegate to the config module's pure resolveChat()
+// so AI Brain defaults and the provider-conditional URL live in exactly one
+// place (services/config.ts). resolveChat returns the RAW apiKey; only
+// getChatApiKey resolves an env:VAR reference, just before use.
+async function getChatApiUrl(): Promise<string> {
+  return resolveChat(await loadPreferences()).url;
+}
+
+async function getChatProvider(): Promise<ChatProvider> {
+  return resolveChat(await loadPreferences()).provider;
+}
+
+async function getChatModel(): Promise<string> {
+  return resolveChat(await loadPreferences()).model;
+}
+
+async function getChatApiKey(): Promise<string> {
+  return resolveApiKey(resolveChat(await loadPreferences()).apiKey);
+}
+
+// Get configured prompt enhancement
+async function getPromptEnhancement(): Promise<string> {
+  const promptTemplate = await getPreference('promptTemplate') || 'natural';
+  const customPrompt = await getPreference('customPrompt') || '';
+  const includeResponseFormat = await getPreference('includeResponseFormat') || 'true';
+  const addModelOptimizations = await getPreference('addModelOptimizations') || 'false';
+  
+  // Get base prompt
+  let basePrompt = '';
+  if (promptTemplate === 'custom' && customPrompt) {
+    basePrompt = customPrompt;
+  } else if (promptTemplate in DEFAULT_PROMPTS) {
+    basePrompt = DEFAULT_PROMPTS[promptTemplate as keyof typeof DEFAULT_PROMPTS];
+  } else {
+    basePrompt = DEFAULT_PROMPTS.natural;
+  }
+  
+  // Add optional enhancements
+  let enhancement = basePrompt;
+  
+  if (includeResponseFormat === 'true') {
+    enhancement += '\n\nResponse Format: Keep responses natural and conversational. Avoid bullet points or numbered lists unless specifically asked.';
+  }
+  
+  if (addModelOptimizations === 'true') {
+    enhancement += '\n\nIMPORTANT: Generate responses that sound like natural human speech, not written text. Use contractions, informal language where appropriate, and conversational tone.';
+  }
+  
+  return enhancement;
+}
+
+// Generate a response from the chat provider
+export async function generateResponse(
+  messages: ConversationMessage[],
+  systemPrompt?: string,
+  context?: number[]
+): Promise<{ response: string; context?: number[] }> {
+  const baseUrl = await getChatApiUrl();
+  const model = await getChatModel();
+  const apiKey = await getChatApiKey();
+  const provider = await getChatProvider();
+
+  // Gemini — Google's generative language API, auth via query string
+  // and a completely different request/response shape from OpenAI.
+  if (provider === 'gemini') {
+    return generateGeminiResponse(messages, systemPrompt, baseUrl, model, apiKey);
+  }
+
+  // For OpenAI, Anthropic, and Groq, use the chat completions API
+  if (provider === 'openai' || provider === 'anthropic' || provider === 'groq') {
+    return generateChatCompletion(messages, systemPrompt, baseUrl, model, apiKey, provider);
+  }
+
+  // For Ollama and custom providers, use the Ollama API format
+  return generateOllamaResponse(messages, systemPrompt, context, baseUrl, model, apiKey);
+}
+
+// Generate response via Gemini's generateContent endpoint. Notes:
+//   * Auth is a ?key=... query string param, NOT an Authorization header
+//   * System prompt goes under `systemInstruction`, not in the messages array
+//   * Roles are 'user' and 'model' (not 'assistant')
+//   * Response body nests the text at candidates[0].content.parts[0].text
+//   * Generation knobs go under `generationConfig`
+async function generateGeminiResponse(
+  messages: ConversationMessage[],
+  systemPrompt: string | undefined,
+  baseUrl: string,
+  model: string,
+  apiKey: string
+): Promise<{ response: string; context?: number[] }> {
+  if (!apiKey) {
+    throw new Error('Gemini requires an API key. Set it in Settings → Chat Model.');
+  }
+  if (!model) {
+    throw new Error('Gemini requires a model name (e.g. gemini-1.5-flash). Pick one in Settings → Chat Model.');
+  }
+
+  // Build the system instruction from scenario prompt + template enhancement.
+  const promptEnhancement = await getPromptEnhancement();
+  const promptBehavior = (await getPreference('promptBehavior')) || 'enhance';
+  let finalSystemPrompt = '';
+  if (systemPrompt) {
+    switch (promptBehavior) {
+      case 'override':      finalSystemPrompt = promptEnhancement; break;
+      case 'scenario-only': finalSystemPrompt = systemPrompt; break;
+      case 'enhance':
+      default:              finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement; break;
+    }
+  } else {
+    finalSystemPrompt = promptEnhancement;
+  }
+
+  // Gemini uses 'user' and 'model' roles. Assistant messages become 'model'.
+  const contents = messages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+
+  const body: Record<string, unknown> = {
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      topP: 0.9,
+      // Hard cap — Gemini's field is maxOutputTokens, not max_tokens.
+      maxOutputTokens: 160,
+    },
+  };
+  if (finalSystemPrompt) {
+    body.systemInstruction = { parts: [{ text: finalSystemPrompt }] };
+  }
+
+  const url = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  console.log('Gemini API request:', { url: url.replace(/key=[^&]+/, 'key=***'), model });
+
+  try {
+    const response = await window.electronAPI.fetch({
+      url,
+      options: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    });
+
+    const bodyText =
+      response.data instanceof Uint8Array
+        ? new TextDecoder().decode(response.data)
+        : typeof response.data === 'string'
+        ? response.data
+        : JSON.stringify(response.data);
+
+    if (!response.ok) {
+      console.error(`Gemini ${response.status} ${response.statusText}`, bodyText);
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`Gemini auth failed (${response.status}). Check GEMINI_API_KEY in Settings.`);
+      }
+      if (response.status === 404) {
+        throw new Error(`Gemini model '${model}' not found. Try gemini-1.5-flash or gemini-1.5-pro.`);
+      }
+      throw new Error(`Gemini failed (${response.status}): ${bodyText.slice(0, 200)}`);
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(bodyText);
+    } catch (err) {
+      throw new Error(`Gemini returned invalid JSON: ${bodyText.slice(0, 200)}`);
+    }
+
+    // Defensive parse — the candidates array can be absent if the
+    // request was blocked by a safety filter (promptFeedback).
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      const blocked = data?.promptFeedback?.blockReason;
+      if (blocked) {
+        throw new Error(`Gemini blocked the request: ${blocked}`);
+      }
+      throw new Error('Gemini returned no text in response.');
+    }
+
+    return { response: text.trim() };
+  } catch (err) {
+    if (err instanceof Error) throw err;
+    throw new Error('Failed to reach Gemini — network error.');
+  }
+}
+
+// Generate response using OpenAI/Anthropic/Groq chat completions API
+async function generateChatCompletion(
+  messages: ConversationMessage[],
+  systemPrompt: string | undefined,
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  provider: 'openai' | 'anthropic' | 'groq' | 'custom' | 'ollama'
+): Promise<{ response: string; context?: number[] }> {
+  const chatMessages: ChatCompletionRequest['messages'] = [];
+  
+  if (systemPrompt) {
+    // Get configured prompt enhancement and behavior
+    const promptEnhancement = await getPromptEnhancement();
+    const promptBehavior = await getPreference('promptBehavior') || 'enhance';
+    
+    // Decide how to apply prompts based on behavior setting
+    let finalSystemPrompt = '';
+    switch (promptBehavior) {
+      case 'override':
+        // Use only the settings prompt, ignore scenario prompt
+        finalSystemPrompt = promptEnhancement;
+        break;
+      case 'enhance':
+        // Combine scenario prompt with settings prompt (default)
+        finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement;
+        break;
+      case 'scenario-only':
+        // Use only the scenario prompt, ignore settings prompt
+        finalSystemPrompt = systemPrompt;
+        break;
+      default:
+        // Fallback to enhance behavior
+        finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement;
+    }
+    
+    chatMessages.push({ role: 'system', content: finalSystemPrompt });
+    
+    // Log the full prompt for debugging
+    console.log('=== CHAT COMPLETION API PROMPT ===');
+    console.log('Prompt Behavior:', promptBehavior);
+    console.log('System Prompt:', finalSystemPrompt);
+    console.log('Messages:', chatMessages);
+    console.log('==================================');
+  }
+  
+  messages.forEach(msg => {
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      chatMessages.push({ role: msg.role, content: msg.content });
+    }
+  });
+  
+  // Build request based on provider format
+  let request: any;
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  
+  if (provider === 'openai' || provider === 'groq') {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+    request = {
+      model,
+      messages: chatMessages,
+      temperature: 0.7,
+      // Hard cap — prevents weaker models from generating essay-length
+      // replies. A spoken turn should never need more than this.
+      max_tokens: 160,
+      stream: false
+    };
+  } else if (provider === 'anthropic') {
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+
+    // Anthropic uses a different format - extract system message
+    const systemMessage = chatMessages.find(m => m.role === 'system');
+    const nonSystemMessages = chatMessages.filter(m => m.role !== 'system');
+
+    request = {
+      model,
+      messages: nonSystemMessages,
+      max_tokens: 200,
+      temperature: 0.7,
+      ...(systemMessage && { system: systemMessage.content })
+    };
+  }
+  
+  try {
+    const endpoint = provider === 'anthropic' 
+      ? '/v1/messages' 
+      : '/v1/chat/completions'; // OpenAI, Groq, and others use the same endpoint
+    
+    const fullUrl = `${baseUrl}${endpoint}`;
+    console.log('Chat API request:', {
+      url: fullUrl,
+      provider,
+      headers: redactAuthHeaders(headers),
+      requestBody: request
+    });
+    
+    // Use IPC to make the request through the main process
+    const response = await window.electronAPI.fetch({
+      url: fullUrl,
+      options: {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      }
+    });
+    
+    if (!response.ok) {
+      // Convert response data to string
+      let errorText = '';
+      if (response.data instanceof Uint8Array) {
+        errorText = new TextDecoder().decode(response.data);
+      } else if (typeof response.data === 'string') {
+        errorText = response.data;
+      } else {
+        errorText = JSON.stringify(response.data);
+      }
+      console.error(`Chat API error response (${response.status}):`, errorText.substring(0, 500));
+      throw new Error(`Chat API request failed: ${response.statusText || response.status}`);
+    }
+    
+    // Parse the response data - convert to string if needed
+    let responseText = '';
+    if (response.data instanceof Uint8Array) {
+      responseText = new TextDecoder().decode(response.data);
+    } else if (typeof response.data === 'string') {
+      responseText = response.data;
+    } else {
+      responseText = JSON.stringify(response.data);
+    }
+    console.log('Chat API response preview:', responseText.substring(0, 200));
+    
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Failed to parse response as JSON:', responseText.substring(0, 500));
+      throw new Error('Invalid response format from API - expected JSON but got: ' + responseText.substring(0, 100));
+    }
+    
+    if (provider === 'anthropic') {
+      // Anthropic response format
+      return {
+        response: data.content[0].text.trim()
+      };
+    } else {
+      // OpenAI/Groq response format
+      return {
+        response: data.choices[0].message.content.trim()
+      };
+    }
+  } catch (error) {
+    console.error('Chat API error:', error);
+    throw new Error(`Failed to generate response. Make sure ${provider} API is configured correctly.`);
+  }
+}
+
+// Generate response using Ollama API
+async function generateOllamaResponse(
+  messages: ConversationMessage[],
+  systemPrompt: string | undefined,
+  context: number[] | undefined,
+  baseUrl: string,
+  model: string,
+  apiKey: string
+): Promise<{ response: string; context?: number[] }> {
+
+  // Convert messages to a prompt format
+  const prompt = messages
+    .map(msg => {
+      if (msg.role === 'user') {
+        return `User: ${msg.content}`;
+      } else if (msg.role === 'assistant') {
+        return `Assistant: ${msg.content}`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n') + '\n\nAssistant:';
+
+  // Get configured prompt enhancement and behavior
+  const promptEnhancement = await getPromptEnhancement();
+  const promptBehavior = await getPreference('promptBehavior') || 'enhance';
+  
+  // Decide how to apply prompts based on behavior setting
+  let finalSystemPrompt = undefined;
+  if (systemPrompt) {
+    switch (promptBehavior) {
+      case 'override':
+        // Use only the settings prompt, ignore scenario prompt
+        finalSystemPrompt = promptEnhancement;
+        break;
+      case 'enhance':
+        // Combine scenario prompt with settings prompt (default)
+        finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement;
+        break;
+      case 'scenario-only':
+        // Use only the scenario prompt, ignore settings prompt
+        finalSystemPrompt = systemPrompt;
+        break;
+      default:
+        // Fallback to enhance behavior
+        finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement;
+    }
+  }
+
+  const request: OllamaGenerateRequest = {
+    model,
+    prompt,
+    system: finalSystemPrompt,
+    stream: false,
+    context,
+    options: {
+      temperature: 0.7,
+      top_p: 0.9,
+      // Hard cap on generated tokens — prevents weaker local models
+      // from rambling into multi-paragraph replies. A spoken turn is
+      // a few sentences, never a lecture.
+      num_predict: 160
+    }
+  };
+
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  try {
+    // Try multiple endpoint variations since different Ollama versions use different paths
+    const chatRequest = {
+      model: model,
+      messages: [
+        ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+        ...messages.map(msg => ({
+          role: msg.role,
+          content: msg.content
+        }))
+      ],
+      stream: false
+    };
+
+    // Try 1: Standard Ollama /api/chat endpoint (newer versions)
+    console.log('Trying /api/chat endpoint...');
+    let response = await window.electronAPI.fetch({
+      url: `${baseUrl}/api/chat`,
+      options: {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(chatRequest),
+      }
+    });
+
+    if (response.ok) {
+      // Convert response data to string if needed
+      let responseText = '';
+      if (response.data instanceof Uint8Array) {
+        responseText = new TextDecoder().decode(response.data);
+      } else if (typeof response.data === 'string') {
+        responseText = response.data;
+      } else {
+        responseText = JSON.stringify(response.data);
+      }
+      const data = JSON.parse(responseText);
+      return {
+        response: data.message.content.trim(),
+        context: undefined
+      };
+    }
+    console.log(`/api/chat failed with status: ${response.status}`);
+
+    // Try 2: Standard Ollama /api/generate endpoint (older versions)
+    console.log('Trying /api/generate endpoint...');
+    response = await window.electronAPI.fetch({
+      url: `${baseUrl}/api/generate`,
+      options: {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      }
+    });
+
+    if (response.ok) {
+      // Convert response data to string if needed
+      let responseText = '';
+      if (response.data instanceof Uint8Array) {
+        responseText = new TextDecoder().decode(response.data);
+      } else if (typeof response.data === 'string') {
+        responseText = response.data;
+      } else {
+        responseText = JSON.stringify(response.data);
+      }
+      const data: OllamaGenerateResponse = JSON.parse(responseText);
+      return {
+        response: data.response.trim(),
+        context: data.context
+      };
+    }
+    console.log(`/api/generate failed with status: ${response.status}`);
+
+    // Try 3: Check if it's an OpenAI-compatible endpoint
+    console.log('Trying OpenAI-compatible /v1/chat/completions endpoint...');
+    response = await window.electronAPI.fetch({
+      url: `${baseUrl}/v1/chat/completions`,
+      options: {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: model,
+          messages: chatRequest.messages,
+          stream: false
+        }),
+      }
+    });
+
+    if (response.ok) {
+      // Convert response data to string if needed
+      let responseText = '';
+      if (response.data instanceof Uint8Array) {
+        responseText = new TextDecoder().decode(response.data);
+      } else if (typeof response.data === 'string') {
+        responseText = response.data;
+      } else {
+        responseText = JSON.stringify(response.data);
+      }
+      const data = JSON.parse(responseText);
+      return {
+        response: data.choices[0].message.content.trim(),
+        context: undefined
+      };
+    }
+    console.log(`/v1/chat/completions failed with status: ${response.status}`);
+
+    // Try 4: Check available models using correct Ollama endpoint /api/tags
+    console.log('Checking available models via /api/tags...');
+    try {
+      const tagsResponse = await window.electronAPI.fetch({
+        url: `${baseUrl}/api/tags`,
+        options: {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+        }
+      });
+      
+      if (tagsResponse.ok) {
+        // Convert response data to string if needed
+        let responseText = '';
+        if (tagsResponse.data instanceof Uint8Array) {
+          responseText = new TextDecoder().decode(tagsResponse.data);
+        } else if (typeof tagsResponse.data === 'string') {
+          responseText = tagsResponse.data;
+        } else {
+          responseText = JSON.stringify(tagsResponse.data);
+        }
+        const tagsData = JSON.parse(responseText);
+        console.log('Available models from /api/tags:', tagsData);
+        
+        if (tagsData.models && tagsData.models.length === 0) {
+          throw new Error(`No models are available on the server. Please install a model first (e.g., 'ollama pull llama3.2')`);
+        }
+        
+        // Check if model exists (exact match or starts with the model name)
+        const modelExists = tagsData.models?.some((m: any) => 
+          m.name === model || 
+          m.name === `${model}:latest` ||
+          m.name.startsWith(`${model}:`) ||
+          m.model === model ||
+          m.model === `${model}:latest` ||
+          m.model.startsWith(`${model}:`)
+        );
+        
+        if (!modelExists) {
+          const availableModels = tagsData.models?.map((m: any) => m.name || m.model).join(', ') || 'none';
+          throw new Error(`Model '${model}' not found. Available models: ${availableModels}. Please update your model name in Settings → Chat Model.`);
+        }
+        
+        console.log(`Model '${model}' found on server, proceeding with request...`);
+      } else {
+        console.log(`Could not fetch models (status: ${tagsResponse.status}), proceeding anyway...`);
+      }
+    } catch (modelError) {
+      console.log('Model check failed:', modelError);
+      throw modelError;
+    }
+
+    throw new Error(`All endpoints failed. Last status: ${response.status} ${response.statusText}`);
+    
+  } catch (error) {
+    console.error('Ollama error:', error);
+    throw new Error('Failed to generate response. Make sure Ollama is running and the model is available.');
+  }
+}
+
+// Stream a response from chat provider (for real-time generation)
+export async function streamResponse(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+  onChunk: (text: string) => void,
+  context?: number[]
+): Promise<number[] | undefined> {
+  const baseUrl = await getChatApiUrl();
+  const model = await getChatModel();
+  const apiKey = await getChatApiKey();
+
+  const prompt = messages
+    .map(msg => {
+      if (msg.role === 'user') {
+        return `User: ${msg.content}`;
+      } else if (msg.role === 'assistant') {
+        return `Assistant: ${msg.content}`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n') + '\n\nAssistant:';
+
+  // Get configured prompt enhancement and behavior
+  const promptEnhancement = await getPromptEnhancement();
+  const promptBehavior = await getPreference('promptBehavior') || 'enhance';
+  
+  // Decide how to apply prompts based on behavior setting
+  let finalSystemPrompt = undefined;
+  if (systemPrompt) {
+    switch (promptBehavior) {
+      case 'override':
+        // Use only the settings prompt, ignore scenario prompt
+        finalSystemPrompt = promptEnhancement;
+        break;
+      case 'enhance':
+        // Combine scenario prompt with settings prompt (default)
+        finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement;
+        break;
+      case 'scenario-only':
+        // Use only the scenario prompt, ignore settings prompt
+        finalSystemPrompt = systemPrompt;
+        break;
+      default:
+        // Fallback to enhance behavior
+        finalSystemPrompt = systemPrompt + '\n\n' + promptEnhancement;
+    }
+  }
+
+  const request: OllamaGenerateRequest = {
+    model,
+    prompt,
+    system: finalSystemPrompt,
+    stream: true,
+    context,
+    options: {
+      temperature: 0.7,
+      top_p: 0.9
+    }
+  };
+
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama request failed: ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No response body');
+    }
+
+    const decoder = new TextDecoder();
+    let finalContext: number[] | undefined;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n').filter(Boolean);
+
+      for (const line of lines) {
+        try {
+          const data: OllamaGenerateResponse = JSON.parse(line);
+          if (data.response) {
+            onChunk(data.response);
+          }
+          if (data.done && data.context) {
+            finalContext = data.context;
+          }
+        } catch (e) {
+          // Ignore JSON parse errors for incomplete chunks
+        }
+      }
+    }
+
+    return finalContext;
+  } catch (error) {
+    console.error('Ollama streaming error:', error);
+    throw new Error('Failed to stream response. Make sure Ollama is running.');
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Streaming chat completion — unified async-iterable interface across all
+// providers. Used by the streaming TTS pipeline so audio can start playing
+// before the LLM finishes generating. See docs/plans/2026-05-05-streaming-tts-pipeline.md
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface StreamOptions {
+  signal?: AbortSignal;
+}
+
+// Wrap fetch with a connection timeout and one retry on transient
+// network failures. The timeout fires only on the initial connection
+// — once the response object is returned, the timer is cancelled so a
+// long-running stream body isn't cut. Retries do NOT apply to in-flight
+// streams (you can't resume an SSE response that already yielded
+// tokens), only to the initial fetch failing before any bytes arrived.
+// User-initiated aborts (init.signal.aborted) pass through immediately
+// without retry.
+async function fetchWithRetry(
+  input: string,
+  init: RequestInit & { signal?: AbortSignal },
+  opts: { timeoutMs?: number; retries?: number } = {},
+): Promise<Response> {
+  const timeoutMs = opts.timeoutMs ?? 60000;
+  const retries = opts.retries ?? 1;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const timeoutCtrl = new AbortController();
+    const timer = setTimeout(() => timeoutCtrl.abort(), timeoutMs);
+    const signals = init.signal ? [init.signal, timeoutCtrl.signal] : [timeoutCtrl.signal];
+    const combined = AbortSignal.any(signals);
+
+    try {
+      const response = await fetch(input, { ...init, signal: combined });
+      clearTimeout(timer);
+      return response;
+    } catch (e) {
+      clearTimeout(timer);
+      if (init.signal?.aborted) throw e;
+      if (attempt === retries) throw e;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw new Error('fetchWithRetry: unreachable');
+}
+
+export async function* streamChatCompletion(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+  opts: StreamOptions = {},
+): AsyncIterable<string> {
+  const provider = await getChatProvider();
+  switch (provider) {
+    case 'ollama':
+      yield* streamOllama(messages, systemPrompt, opts);
+      return;
+    case 'openai':
+    case 'groq':
+    case 'custom':
+      yield* streamOpenAICompatible(messages, systemPrompt, opts, provider);
+      return;
+    case 'anthropic':
+      yield* streamAnthropic(messages, systemPrompt, opts);
+      return;
+    case 'gemini':
+      yield* streamGemini(messages, systemPrompt, opts);
+      return;
+    default:
+      throw new Error(`Streaming not implemented for provider: ${provider}`);
+  }
+}
+
+async function* streamOllama(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+  opts: StreamOptions,
+): AsyncIterable<string> {
+  const queue: string[] = [];
+  let done = false;
+  let error: unknown = null;
+  let resolveNext: (() => void) | null = null;
+
+  const promise = streamResponse(messages, systemPrompt, (chunk) => {
+    if (opts.signal?.aborted) return;
+    queue.push(chunk);
+    resolveNext?.();
+    resolveNext = null;
+  })
+    .then(() => { done = true; resolveNext?.(); })
+    .catch((e) => { error = e; done = true; resolveNext?.(); });
+
+  while (!done || queue.length) {
+    if (opts.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    if (queue.length) {
+      yield queue.shift()!;
+    } else {
+      await new Promise<void>((r) => { resolveNext = r; });
+    }
+  }
+  if (error) throw error;
+  await promise;
+}
+
+async function* streamOpenAICompatible(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+  opts: StreamOptions,
+  provider: 'openai' | 'groq' | 'custom',
+): AsyncIterable<string> {
+  const baseUrl = await getChatApiUrl();
+  const model = await getChatModel();
+  const apiKey = await getChatApiKey();
+
+  const body = {
+    model,
+    messages: [
+      ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ],
+    stream: true,
+    max_tokens: 2048,
+    temperature: 0.7,
+  };
+
+  const response = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`${provider} streaming failed: ${response.status} ${response.statusText} ${text}`);
+  }
+
+  yield* readSSEDeltas(response.body, (data) => {
+    const parsed = JSON.parse(data);
+    return parsed.choices?.[0]?.delta?.content ?? null;
+  });
+}
+
+async function* streamAnthropic(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+  opts: StreamOptions,
+): AsyncIterable<string> {
+  const baseUrl = await getChatApiUrl();
+  const model = await getChatModel();
+  const apiKey = await getChatApiKey();
+
+  const response = await fetchWithRetry(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey || '',
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model,
+      system: systemPrompt || undefined,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      max_tokens: 2048,
+      stream: true,
+    }),
+    signal: opts.signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Anthropic streaming failed: ${response.status} ${response.statusText} ${text}`);
+  }
+
+  yield* readSSEDeltas(response.body, (data) => {
+    const parsed = JSON.parse(data);
+    if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+      return parsed.delta.text ?? null;
+    }
+    return null;
+  });
+}
+
+async function* streamGemini(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+  opts: StreamOptions,
+): AsyncIterable<string> {
+  const baseUrl = await getChatApiUrl();
+  const model = await getChatModel();
+  const apiKey = await getChatApiKey();
+
+  const url = `${baseUrl}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+  const response = await fetchWithRetry(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined,
+      contents: messages.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      })),
+      generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
+    }),
+    signal: opts.signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Gemini streaming failed: ${response.status} ${response.statusText} ${text}`);
+  }
+
+  yield* readSSEDeltas(response.body, (data) => {
+    const parsed = JSON.parse(data);
+    return parsed.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+  });
+}
+
+// Shared SSE reader. The extractor returns the text delta from a parsed
+// `data:` line, or null to skip (non-content events, malformed lines).
+async function* readSSEDeltas(
+  body: ReadableStream<Uint8Array>,
+  extract: (data: string) => string | null,
+): AsyncIterable<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') return;
+        try {
+          const text = extract(data);
+          if (text) yield text;
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

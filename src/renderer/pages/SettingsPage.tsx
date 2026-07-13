@@ -1,0 +1,2047 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { getAllPreferences, setPreference, resetDatabase } from '../services/sqlite';
+import { Save, ExternalLink, Download, Upload, RefreshCw, ChevronDown, AlertTriangle, Server, Mic, Volume2, MessageSquare, PenLine, Database } from 'lucide-react';
+import * as embeddedService from '../services/embedded';
+import * as speechProvider from '../services/speechProvider';
+import { EmbeddedInstallModal } from '../components/settings/EmbeddedInstallModal';
+import { DEFAULT_PROMPTS, CHAT_PROVIDER_URLS, CHAT_PROVIDER_ENV_VARS, resolveApiKey } from '../services/chat';
+
+// Component for API Key input with environment variable support.
+//
+// `envVarName` is the name the env-var radio populates with (e.g.
+// 'ANTHROPIC_API_KEY'). The actual preference stores `env:VAR_NAME`.
+// Kept backward-compatible with the old `envPlaceholder` prop shape
+// for callers that pre-date the provider-aware rewrite.
+function ApiKeyInput({
+  value,
+  onChange,
+  placeholder = "sk-... or leave empty",
+  envVarName,
+  envPlaceholder,
+  fieldName,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  envVarName?: string;
+  envPlaceholder?: string;
+  fieldName: string;
+}) {
+  const resolvedEnvPlaceholder = envVarName
+    ? `env:${envVarName}`
+    : envPlaceholder || 'env:API_KEY_NAME';
+  const isEnvVar = value?.startsWith('env:');
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-4">
+        <label className="flex items-center">
+          <input
+            type="radio"
+            name={`apiKeySource-${fieldName}`}
+            value="manual"
+            checked={!isEnvVar}
+            onChange={() => onChange('')}
+            className="mr-2"
+          />
+          <span className="text-sm">Paste a key</span>
+        </label>
+        <label className="flex items-center">
+          <input
+            type="radio"
+            name={`apiKeySource-${fieldName}`}
+            value="env"
+            checked={isEnvVar}
+            onChange={() => onChange(resolvedEnvPlaceholder)}
+            className="mr-2"
+          />
+          <span className="text-sm">Read from system (advanced)</span>
+        </label>
+      </div>
+
+      <input
+        type={isEnvVar ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        placeholder={isEnvVar ? resolvedEnvPlaceholder : placeholder}
+      />
+    </div>
+  );
+}
+
+// Component for Model Selection with dropdown and custom entry
+function ModelSelector({ 
+  value, 
+  onChange, 
+  placeholder = "Select or enter model",
+  models,
+  loading,
+  error,
+  onRefresh,
+  label,
+  description
+}: { 
+  value: string; 
+  onChange: (value: string) => void;
+  placeholder?: string;
+  models: string[];
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+  label: string;
+  description?: string;
+}) {
+  const [isCustom, setIsCustom] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  // Check if current value is in the models list
+  useEffect(() => {
+    if (value && models.length > 0) {
+      setIsCustom(!models.includes(value));
+    }
+  }, [value, models]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.model-selector-dropdown')) {
+        setShowDropdown(false);
+      }
+    };
+
+    if (showDropdown) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [showDropdown]);
+
+  const handleModelSelect = (selectedModel: string) => {
+    if (selectedModel === '__custom__') {
+      setIsCustom(true);
+      setShowDropdown(false);
+    } else {
+      setIsCustom(false);
+      onChange(selectedModel);
+      setShowDropdown(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">
+        {label}
+      </label>
+      <div className="flex gap-2">
+        <div className="flex-1 relative model-selector-dropdown">
+          {isCustom ? (
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder={placeholder}
+            />
+          ) : (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowDropdown(!showDropdown)}
+                className="w-full px-4 py-2 text-left border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white flex items-center justify-between"
+              >
+                <span className={value ? "text-gray-900" : "text-gray-500"}>
+                  {value || placeholder}
+                </span>
+                <ChevronDown size={16} className="text-gray-400" />
+              </button>
+              
+              {showDropdown && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                  {models.length > 0 ? (
+                    <>
+                      {models.map((model) => (
+                        <button
+                          key={model}
+                          type="button"
+                          onClick={() => handleModelSelect(model)}
+                          className="w-full px-4 py-2 text-left hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
+                        >
+                          {model}
+                        </button>
+                      ))}
+                      <div className="border-t border-gray-200">
+                        <button
+                          type="button"
+                          onClick={() => handleModelSelect('__custom__')}
+                          className="w-full px-4 py-2 text-left hover:bg-gray-50 focus:bg-gray-50 focus:outline-none text-blue-600"
+                        >
+                          📝 Custom (manual entry)
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="px-4 py-2 text-gray-500">
+                      {loading ? 'Loading models...' : 'No models available'}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          
+          {isCustom && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsCustom(false);
+                if (models.length > 0) {
+                  onChange(models[0]);
+                }
+              }}
+              className="absolute right-2 top-1/2 transform -translate-y-1/2 text-sm text-blue-600 hover:text-blue-700"
+            >
+              Back to list
+            </button>
+          )}
+        </div>
+        
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+          title="Refresh models"
+        >
+          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+      
+      {description && (
+        <p className="mt-1 text-sm text-gray-600">{description}</p>
+      )}
+      
+      {error && (
+        <p className="mt-1 text-sm text-red-600">{error}</p>
+      )}
+    </div>
+  );
+}
+
+// Prompt templates
+// UI metadata for each template. The actual `prompt` text is pulled
+// from DEFAULT_PROMPTS in services/chat.ts — the single source of truth
+// the LLM sees. That way "edit one place, not two."
+const PROMPT_TEMPLATE_META = {
+  natural:     { name: 'Natural Conversation',   description: 'Default conversational style for natural practice' },
+  educational: { name: 'Educational/Detailed',   description: 'More detailed responses with gentle corrections' },
+  concise:     { name: 'Brief/Concise',          description: 'Very short, to-the-point responses' },
+  business:    { name: 'Business Professional',  description: 'Professional business communication style' },
+  supportive:  { name: 'Supportive/Encouraging', description: 'Extra encouragement for language learners' },
+} as const;
+
+const PROMPT_TEMPLATES: Record<
+  keyof typeof PROMPT_TEMPLATE_META,
+  { name: string; description: string; prompt: string }
+> = Object.fromEntries(
+  (Object.keys(PROMPT_TEMPLATE_META) as Array<keyof typeof PROMPT_TEMPLATE_META>).map((key) => [
+    key,
+    {
+      name: PROMPT_TEMPLATE_META[key].name,
+      description: PROMPT_TEMPLATE_META[key].description,
+      prompt: DEFAULT_PROMPTS[key],
+    },
+  ])
+) as Record<keyof typeof PROMPT_TEMPLATE_META, { name: string; description: string; prompt: string }>;
+
+export function SettingsPage() {
+  const navigate = useNavigate();
+  const [preferences, setPreferences] = useState({
+    speachesUrl: 'https://speaches.locopuente.org',
+    sttUrl: 'https://speaches.locopuente.org',
+    ttsUrl: 'https://speaches.locopuente.org',
+    sttProvider: 'embedded' as 'embedded' | 'speaches' | 'groq',
+    ttsProvider: 'embedded' as 'embedded' | 'speaches',
+    chatProvider: 'ollama' as 'anthropic' | 'openai' | 'ollama' | 'groq' | 'gemini' | 'custom',
+    embeddedSttUrl: 'http://127.0.0.1:8765',
+    embeddedTtsUrl: 'http://127.0.0.1:8765',
+    embeddedMaleVoiceId: '',
+    embeddedFemaleVoiceId: '',
+    embeddedSpeechSpeed: '1.2',
+    sttApiKey: '',
+    ttsApiKey: '',
+    ollamaUrl: 'https://ollama.serveur.au',
+    ollamaApiKey: '',
+    ollamaModel: 'llama2',
+    voice: 'female' as 'male' | 'female',
+    sttModel: 'Systran/faster-whisper-small',
+    ttsModel: 'speaches-ai/Kokoro-82M-v1.0-ONNX',
+    maleTTSModel: 'speaches-ai/Kokoro-82M-v1.0-ONNX',
+    femaleTTSModel: 'speaches-ai/Kokoro-82M-v1.0-ONNX',
+    maleVoice: 'am_adam',
+    femaleVoice: 'af_bella',
+    ttsSpeed: '1.25',
+    conversationCue: 'rise' as 'rise' | 'click' | 'none',
+    pttMode: 'hold' as 'hold' | 'toggle',
+    theme: 'system' as 'light' | 'dark' | 'system',
+    promptTemplate: 'natural',
+    customPrompt: '',
+    promptBehavior: 'enhance' as 'enhance' | 'override' | 'scenario-only',
+    includeResponseFormat: true,
+    addModelOptimizations: false
+  });
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [activeTab, setActiveTab] = useState('stt');
+  const [testing, setTesting] = useState({
+    stt: false,
+    tts: false,
+    chat: false
+  });
+  const [testResults, setTestResults] = useState({
+    stt: '',
+    tts: '',
+    chat: ''
+  });
+  const [models, setModels] = useState<{
+    stt: string[];
+    tts: string[];
+    chat: string[];
+  }>({
+    stt: [],
+    tts: [],
+    chat: []
+  });
+  const [loadingModels, setLoadingModels] = useState({
+    stt: false,
+    tts: false,
+    chat: false
+  });
+  const [modelErrors, setModelErrors] = useState({
+    stt: '',
+    tts: '',
+    chat: ''
+  });
+  const [embeddedServerStatus, setEmbeddedServerStatus] = useState({
+    running: false,
+    url: 'http://127.0.0.1:8765',
+    port: 8765
+  });
+  // Tracks whether the embedded server is actually installed (venv present
+  // in dev, or bundled binary present in prod). Distinct from `running` —
+  // installed can be true even if the server hasn't been started yet.
+  const [embeddedInstalled, setEmbeddedInstalled] = useState<boolean | null>(null);
+  const [showInstallModal, setShowInstallModal] = useState(false);
+  // When the user clicks Embedded while it's not installed, we defer
+  // flipping the provider state until install succeeds — otherwise the
+  // UI would silently switch to a provider that can't respond.
+  const [pendingProviderSwitch, setPendingProviderSwitch] = useState<null | 'stt' | 'tts' | 'both'>(null);
+  // Embedded voices state - currently not displayed but available for future use
+  // @ts-ignore - Reserved for future voice selection UI
+  const [embeddedVoices, setEmbeddedVoices] = useState({
+    male: [] as Array<{id: number, name: string, gender: string}>,
+    female: [] as Array<{id: number, name: string, gender: string}>,
+    unknown: [] as Array<{id: number, name: string, gender: string}>,
+    all: [] as Array<{id: number, name: string, gender: string}>
+  });
+  // Voice loading state - currently not used but available for future voice selection UI
+  // @ts-ignore - Reserved for future voice loading indicators
+  const [loadingVoices, setLoadingVoices] = useState(false);
+
+  useEffect(() => {
+    loadPreferences();
+    checkEmbeddedServerStatus();
+    void refreshEmbeddedInstallState();
+  }, []);
+
+  const refreshEmbeddedInstallState = async () => {
+    try {
+      const state = await window.electronAPI.embeddedInstall.check();
+      setEmbeddedInstalled(state.installed);
+    } catch (err) {
+      console.warn('Failed to check embedded install state:', err);
+      setEmbeddedInstalled(false);
+    }
+  };
+
+  // Intercepts attempts to switch to the embedded provider. If the server
+  // isn't installed yet, opens the install modal instead of silently
+  // flipping to a broken state. Called from both STT and TTS radio groups.
+  const handleProviderChange = (
+    field: 'sttProvider' | 'ttsProvider',
+    newValue: 'embedded' | 'speaches' | 'groq'
+  ) => {
+    if (newValue === 'embedded' && embeddedInstalled === false) {
+      setPendingProviderSwitch(field === 'sttProvider' ? 'stt' : 'tts');
+      setShowInstallModal(true);
+      return;
+    }
+    setPreferences({ ...preferences, [field]: newValue });
+  };
+
+  const handleInstallSuccess = async () => {
+    await refreshEmbeddedInstallState();
+    // If the user clicked Embedded before install started, honor that
+    // intent now that the server is actually available.
+    if (pendingProviderSwitch === 'stt') {
+      setPreferences({ ...preferences, sttProvider: 'embedded' });
+    } else if (pendingProviderSwitch === 'tts') {
+      setPreferences({ ...preferences, ttsProvider: 'embedded' });
+    }
+    setPendingProviderSwitch(null);
+    // Kick the embedded server start in the background so the user can
+    // start using it immediately after closing the modal.
+    void window.electronAPI.embeddedServerStart().then(() => checkEmbeddedServerStatus());
+  };
+
+  const checkEmbeddedServerStatus = async () => {
+    try {
+      const status = await window.electronAPI.embeddedServerStatus();
+      setEmbeddedServerStatus(status);
+      
+      // Load voices if server is running
+      if (status.running) {
+        loadEmbeddedVoices();
+      }
+    } catch (error) {
+      console.error('Failed to get embedded server status:', error);
+    }
+  };
+
+  const loadEmbeddedVoices = async () => {
+    setLoadingVoices(true);
+    try {
+      const voices = await embeddedService.getCategorizedVoices();
+      setEmbeddedVoices(voices);
+    } catch (error) {
+      console.error('Failed to load embedded voices:', error);
+    } finally {
+      setLoadingVoices(false);
+    }
+  };
+
+  const loadPreferences = async () => {
+    try {
+      const prefs = await getAllPreferences();
+      setPreferences({
+        speachesUrl: prefs.speachesUrl || 'https://speaches.locopuente.org',
+        sttUrl: prefs.sttUrl || prefs.speachesUrl || 'https://speaches.locopuente.org',
+        ttsUrl: prefs.ttsUrl || prefs.speachesUrl || 'https://speaches.locopuente.org',
+        sttProvider: (prefs.sttProvider || 'embedded') as 'embedded' | 'speaches' | 'groq',
+        ttsProvider: (prefs.ttsProvider || 'embedded') as 'embedded' | 'speaches',
+        chatProvider: (prefs.chatProvider || 'ollama') as 'anthropic' | 'openai' | 'ollama' | 'groq' | 'gemini' | 'custom',
+        embeddedSttUrl: (prefs.embeddedSttUrl || 'http://127.0.0.1:8765').replace(':8766', ':8765'),
+        embeddedTtsUrl: (prefs.embeddedTtsUrl || 'http://127.0.0.1:8765').replace(':8766', ':8765'),
+        embeddedMaleVoiceId: prefs.embeddedMaleVoiceId || '',
+        embeddedFemaleVoiceId: prefs.embeddedFemaleVoiceId || '',
+        embeddedSpeechSpeed: prefs.embeddedSpeechSpeed || '1.2',
+        sttApiKey: prefs.sttApiKey || '',
+        ttsApiKey: prefs.ttsApiKey || '',
+        ollamaUrl: prefs.ollamaUrl || 'https://ollama.serveur.au',
+        ollamaApiKey: prefs.ollamaApiKey || '',
+        ollamaModel: prefs.ollamaModel || 'llama2',
+        voice: (prefs.voice || 'female') as 'male' | 'female',
+        sttModel: prefs.sttModel || 'Systran/faster-whisper-small',
+        ttsModel: prefs.ttsModel || 'speaches-ai/Kokoro-82M-v1.0-ONNX',
+        maleTTSModel: prefs.maleTTSModel || 'speaches-ai/Kokoro-82M-v1.0-ONNX',
+        femaleTTSModel: prefs.femaleTTSModel || 'speaches-ai/Kokoro-82M-v1.0-ONNX',
+        maleVoice: prefs.maleVoice || 'am_adam',
+        femaleVoice: prefs.femaleVoice || 'af_bella',
+        ttsSpeed: prefs.ttsSpeed || '1.25',
+        conversationCue: ((prefs.conversationCue as 'rise' | 'click' | 'none') || 'rise'),
+        pttMode: ((prefs.pttMode as 'hold' | 'toggle') || 'hold'),
+        theme: ((prefs.theme as 'light' | 'dark' | 'system') || 'system'),
+        promptTemplate: prefs.promptTemplate || 'natural',
+        customPrompt: prefs.customPrompt || '',
+        promptBehavior: (prefs.promptBehavior as 'enhance' | 'override' | 'scenario-only') || 'enhance',
+        includeResponseFormat: prefs.includeResponseFormat !== 'false',
+        addModelOptimizations: prefs.addModelOptimizations === 'true'
+      });
+    } catch (error) {
+      console.error('Failed to load preferences:', error);
+    }
+  };
+
+  const savePreferences = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      await setPreference('speachesUrl', preferences.speachesUrl);
+      await setPreference('sttUrl', preferences.sttUrl);
+      await setPreference('ttsUrl', preferences.ttsUrl);
+      await setPreference('sttProvider', preferences.sttProvider);
+      await setPreference('ttsProvider', preferences.ttsProvider);
+      await setPreference('chatProvider', preferences.chatProvider);
+      await setPreference('embeddedSttUrl', preferences.embeddedSttUrl);
+      await setPreference('embeddedTtsUrl', preferences.embeddedTtsUrl);
+      await setPreference('embeddedMaleVoiceId', preferences.embeddedMaleVoiceId);
+      await setPreference('embeddedFemaleVoiceId', preferences.embeddedFemaleVoiceId);
+      await setPreference('embeddedSpeechSpeed', preferences.embeddedSpeechSpeed);
+      await setPreference('sttApiKey', preferences.sttApiKey);
+      await setPreference('ttsApiKey', preferences.ttsApiKey);
+      await setPreference('ollamaUrl', preferences.ollamaUrl);
+      await setPreference('ollamaApiKey', preferences.ollamaApiKey);
+      await setPreference('ollamaModel', preferences.ollamaModel);
+      await setPreference('voice', preferences.voice);
+      await setPreference('sttModel', preferences.sttModel);
+      await setPreference('ttsModel', preferences.ttsModel);
+      await setPreference('maleTTSModel', preferences.maleTTSModel);
+      await setPreference('femaleTTSModel', preferences.femaleTTSModel);
+      await setPreference('maleVoice', preferences.maleVoice);
+      await setPreference('femaleVoice', preferences.femaleVoice);
+      await setPreference('ttsSpeed', preferences.ttsSpeed);
+      await setPreference('conversationCue', preferences.conversationCue);
+      await setPreference('pttMode', preferences.pttMode);
+      await setPreference('theme', preferences.theme);
+      // Tell the App-level theme manager to re-apply immediately so the
+      // user sees the change without a reload.
+      window.dispatchEvent(new CustomEvent('talkbuddy:theme-change', { detail: preferences.theme }));
+      await setPreference('promptTemplate', preferences.promptTemplate);
+      await setPreference('customPrompt', preferences.customPrompt);
+      await setPreference('promptBehavior', preferences.promptBehavior);
+      await setPreference('includeResponseFormat', preferences.includeResponseFormat ? 'true' : 'false');
+      await setPreference('addModelOptimizations', preferences.addModelOptimizations ? 'true' : 'false');
+      setMessage('Settings saved successfully!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Failed to save preferences:', error);
+      setMessage('Failed to save settings. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const exportData = async () => {
+    try {
+      // This would be implemented in the sqlite service
+      setMessage('Export feature coming soon!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Export failed:', error);
+    }
+  };
+
+  const importData = async () => {
+    try {
+      // This would be implemented in the sqlite service
+      setMessage('Import feature coming soon!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Import failed:', error);
+    }
+  };
+
+  const handleResetDatabase = async () => {
+    const confirmed = window.confirm(
+      'WARNING: This will delete ALL your data including:\n' +
+      '• All scenarios (custom and default)\n' +
+      '• All session history\n' +
+      '• All practice packs\n\n' +
+      'Your settings will be preserved.\n\n' +
+      'Are you absolutely sure you want to reset the database?'
+    );
+    
+    if (!confirmed) return;
+    
+    const doubleConfirmed = window.confirm(
+      'This action cannot be undone!\n\n' +
+      'Click OK to permanently delete all data and start fresh.'
+    );
+    
+    if (!doubleConfirmed) return;
+    
+    try {
+      const result = await resetDatabase();
+      if (result.success) {
+        setMessage('Database reset successfully! The app will reload...');
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+      } else {
+        setMessage('Failed to reset database. Please try again.');
+      }
+    } catch (error) {
+      console.error('Database reset failed:', error);
+      setMessage('Failed to reset database. Please try again.');
+    }
+  };
+
+  const testService = async (serviceType: 'stt' | 'tts' | 'chat') => {
+    setTesting(prev => ({ ...prev, [serviceType]: true }));
+    setTestResults(prev => ({ ...prev, [serviceType]: '' }));
+
+    // Whenever a test finishes (success or failure), tell the
+    // StatusFooter to re-run its checks so the bottom-of-screen status
+    // reflects the current reality without waiting for the 30s poll.
+    const notifyFooter = () => {
+      window.dispatchEvent(new CustomEvent('talkbuddy:status-refresh'));
+    };
+
+    try {
+      // Use speech provider abstraction for STT/TTS testing
+      if (serviceType === 'stt') {
+        const connected = await speechProvider.checkSTTConnection();
+        const provider = preferences.sttProvider;
+        setTestResults(prev => ({
+          ...prev,
+          [serviceType]: connected
+            ? `✅ ${provider === 'embedded' ? 'Embedded' : 'Speaches'} STT server is running and healthy`
+            : `❌ ${provider === 'embedded' ? 'Embedded' : 'Speaches'} STT server is not available. Check configuration.`
+        }));
+        notifyFooter();
+        return;
+      }
+
+      if (serviceType === 'tts') {
+        const connected = await speechProvider.checkTTSConnection();
+        const provider = preferences.ttsProvider;
+        setTestResults(prev => ({
+          ...prev,
+          [serviceType]: connected
+            ? `✅ ${provider === 'embedded' ? 'Embedded' : 'Speaches'} TTS server is running and healthy`
+            : `❌ ${provider === 'embedded' ? 'Embedded' : 'Speaches'} TTS server is not available. Check configuration.`
+        }));
+        notifyFooter();
+        return;
+      }
+      
+      // Chat: actually validate the API key by hitting an authenticated
+      // endpoint. The old "ping the base URL with no headers" approach
+      // gave false confidence — Anthropic's domain returns 200 to
+      // anonymous GETs, so the test always passed even when the key was
+      // missing or wrong, hiding the real problem until users tried to
+      // talk and got 401s.
+      if (serviceType === 'chat') {
+        const provider = preferences.chatProvider;
+        const apiKey = await resolveApiKey(preferences.ollamaApiKey);
+        let endpoint: string;
+        const headers: Record<string, string> = {};
+
+        if (provider === 'anthropic') {
+          endpoint = `${CHAT_PROVIDER_URLS.anthropic}/v1/models`;
+          if (apiKey) {
+            headers['x-api-key'] = apiKey;
+            headers['anthropic-version'] = '2023-06-01';
+          }
+        } else if (provider === 'openai' || provider === 'groq') {
+          endpoint = `${CHAT_PROVIDER_URLS[provider]}/v1/models`;
+          if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        } else if (provider === 'gemini') {
+          endpoint = `${CHAT_PROVIDER_URLS.gemini}/v1beta/models${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
+        } else {
+          // Ollama / Custom — unauthenticated tags endpoint
+          const url = preferences.ollamaUrl?.endsWith('/')
+            ? preferences.ollamaUrl.slice(0, -1)
+            : preferences.ollamaUrl || '';
+          endpoint = `${url}/api/tags`;
+        }
+
+        const response = await window.electronAPI.fetch({
+          url: endpoint,
+          options: { method: 'GET', headers },
+        });
+
+        if (response.ok) {
+          setTestResults(prev => ({
+            ...prev,
+            chat: `✅ ${provider} reachable and API key valid`,
+          }));
+        } else if (response.status === 401 || response.status === 403) {
+          const hint = !apiKey
+            ? ' (no key found — check the API key field, and if it starts with `env:`, verify the env var is set in the shell that launched Talk Buddy)'
+            : '';
+          setTestResults(prev => ({
+            ...prev,
+            chat: `❌ ${provider} rejected the API key (HTTP ${response.status})${hint}`,
+          }));
+        } else {
+          setTestResults(prev => ({
+            ...prev,
+            chat: `⚠️ ${provider} returned HTTP ${response.status} ${response.statusText}`,
+          }));
+        }
+        notifyFooter();
+        return;
+      }
+
+      let baseUrl;
+
+      switch (serviceType as string) {
+        case 'stt':
+          baseUrl = preferences.sttUrl;
+          break;
+        case 'tts':
+          baseUrl = preferences.ttsUrl;
+          break;
+      }
+
+      // Remove trailing slash for consistency
+      const cleanUrl = baseUrl ? (baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) : '';
+
+      // First, try a simple GET request to the base URL to check if server is reachable
+      const baseResponse = await window.electronAPI.fetch({
+        url: cleanUrl || '',
+        options: {
+          method: 'GET',
+          headers: {}
+        }
+      });
+
+      if (baseResponse.ok) {
+        setTestResults(prev => ({
+          ...prev,
+          [serviceType]: '✅ Server reachable and responding'
+        }));
+        return;
+      }
+
+      // If base URL doesn't work, try common API endpoints
+      const commonEndpoints = [
+        '/health',
+        '/status', 
+        '/',
+        '/docs',
+        '/api',
+        '/v1',
+        '/v1/models',
+        '/v1/audio/transcriptions', // OpenAI STT
+        '/v1/audio/speech',         // OpenAI TTS
+        '/v1/chat/completions',     // OpenAI Chat
+        '/api/chat',                // Ollama-style
+        '/api/generate',            // Ollama-style
+        '/models',                  // Common model endpoint
+      ];
+
+      let foundEndpoint = false;
+      let workingEndpoints = [];
+
+      for (const endpoint of commonEndpoints) {
+        try {
+          const testResponse = await window.electronAPI.fetch({
+            url: `${cleanUrl}${endpoint}`,
+            options: {
+              method: 'GET',
+              headers: {}
+            }
+          });
+
+          if (testResponse.ok || testResponse.status === 405 || testResponse.status === 401) {
+            // 200 = working, 405 = method not allowed (endpoint exists), 401 = auth required
+            workingEndpoints.push(endpoint);
+            foundEndpoint = true;
+          }
+        } catch (e) {
+          // Continue to next endpoint
+        }
+      }
+
+      if (foundEndpoint) {
+        setTestResults(prev => ({ 
+          ...prev, 
+          [serviceType]: `✅ Server reachable. Found endpoints: ${workingEndpoints.join(', ')}` 
+        }));
+      } else {
+        // Try one more test with a HEAD request to see if server responds at all
+        try {
+          const headResponse = await window.electronAPI.fetch({
+            url: cleanUrl || '',
+            options: {
+              method: 'HEAD',
+              headers: {}
+            }
+          });
+
+          if (headResponse.status && headResponse.status < 500) {
+            setTestResults(prev => ({ 
+              ...prev, 
+              [serviceType]: `⚠️ Server reachable but API endpoints not found. Status: ${headResponse.status}` 
+            }));
+          } else {
+            setTestResults(prev => ({ 
+              ...prev, 
+              [serviceType]: `❌ Server error: ${headResponse.status} ${headResponse.statusText}` 
+            }));
+          }
+        } catch (error) {
+          setTestResults(prev => ({ 
+            ...prev, 
+            [serviceType]: `❌ Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
+          }));
+        }
+      }
+
+    } catch (error) {
+      setTestResults(prev => ({
+        ...prev,
+        [serviceType]: `❌ Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      }));
+    } finally {
+      setTesting(prev => ({ ...prev, [serviceType]: false }));
+      // Whatever path we took (STT/TTS early-return, chat fallback, or
+      // caught exception), tell the footer to re-check.
+      notifyFooter();
+    }
+  };
+
+  const fetchModels = async (serviceType: 'stt' | 'tts' | 'chat') => {
+    setLoadingModels(prev => ({ ...prev, [serviceType]: true }));
+    setModelErrors(prev => ({ ...prev, [serviceType]: '' }));
+
+    try {
+      // Handle provider-specific model fetching
+      if (serviceType === 'stt' && preferences.sttProvider === 'embedded') {
+        const models = await embeddedService.getAvailableModels();
+        const sttModels = models.filter(model => model.id.includes('whisper'));
+        setModels(prev => ({ ...prev, stt: sttModels.map(m => m.id) }));
+        return;
+      }
+      
+      if (serviceType === 'tts' && preferences.ttsProvider === 'embedded') {
+        const voices = await speechProvider.getAvailableVoices();
+        setModels(prev => ({ ...prev, tts: voices }));
+        return;
+      }
+      
+      let url, endpoint;
+      
+      switch (serviceType) {
+        case 'stt':
+          if (preferences.sttProvider === 'groq') {
+            url = CHAT_PROVIDER_URLS.groq;
+          } else {
+            url = preferences.sttUrl;
+          }
+          endpoint = url.endsWith('/') ? `${url}v1/models` : `${url}/v1/models`;
+          break;
+        case 'tts':
+          url = preferences.ttsUrl;
+          endpoint = url.endsWith('/') ? `${url}v1/models` : `${url}/v1/models`;
+          break;
+        case 'chat':
+          // For hosted providers use the canonical URL so users don't
+          // have to type it. Only Ollama/Custom read from the stored
+          // preference.
+          if (
+            preferences.chatProvider === 'anthropic' ||
+            preferences.chatProvider === 'openai' ||
+            preferences.chatProvider === 'groq'
+          ) {
+            url = CHAT_PROVIDER_URLS[preferences.chatProvider];
+            endpoint = `${url}/v1/models`;
+          } else if (preferences.chatProvider === 'gemini') {
+            url = CHAT_PROVIDER_URLS.gemini;
+            // Gemini uses key=... in the query string (auth is NOT a
+            // header). We inject it here so the fetch below doesn't
+            // need to know about it.
+            const geminiKey = await resolveApiKey(preferences.ollamaApiKey);
+            endpoint = `${url}/v1beta/models${geminiKey ? `?key=${encodeURIComponent(geminiKey)}` : ''}`;
+          } else {
+            url = preferences.ollamaUrl;
+            endpoint = url.endsWith('/') ? `${url}api/tags` : `${url}/api/tags`;
+          }
+          break;
+      }
+
+      const headers: any = {};
+      const rawApiKey = serviceType === 'stt' ? preferences.sttApiKey :
+                        serviceType === 'tts' ? preferences.ttsApiKey : preferences.ollamaApiKey;
+      // Resolve env:VAR references to the real value BEFORE deciding
+      // whether to attach an auth header. The old code skipped auth
+      // entirely for env-var keys, which silently broke every provider
+      // that uses env vars.
+      const apiKey = await resolveApiKey(rawApiKey);
+
+      if (serviceType === 'chat' && preferences.chatProvider === 'anthropic') {
+        if (apiKey) {
+          headers['x-api-key'] = apiKey;
+          headers['anthropic-version'] = '2023-06-01';
+        }
+      } else if (serviceType === 'chat' && preferences.chatProvider === 'gemini') {
+        // Gemini — key goes in the query string (already injected into
+        // endpoint above), no auth header.
+      } else {
+        // All other services and providers use Bearer token
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+      }
+
+      const response = await window.electronAPI.fetch({
+        url: endpoint,
+        options: {
+          method: 'GET',
+          headers
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = JSON.parse(new TextDecoder().decode(response.data));
+      
+      let modelList = [];
+      
+      if (serviceType === 'chat') {
+        switch (preferences.chatProvider) {
+          case 'openai':
+          case 'groq':
+            // OpenAI format: { "data": [{ "id": "model_id", ... }] }
+            modelList = data.data?.map((model: any) => model.id) || [];
+            if (preferences.chatProvider === 'openai') {
+              // Filter for GPT models only for OpenAI
+              modelList = modelList.filter((id: string) => id.includes('gpt'));
+            }
+            break;
+          case 'anthropic':
+            // Anthropic format: { "data": [{ "id": "model_id", "type": "model", ... }] }
+            if (data.data && Array.isArray(data.data)) {
+              modelList = data.data
+                .filter((model: any) => model.type === 'model' && model.id.includes('claude'))
+                .map((model: any) => model.id) || [];
+            }
+            // If no models found from API, fallback to known recent models.
+            if (modelList.length === 0) {
+              modelList = [
+                'claude-opus-4-5',
+                'claude-sonnet-4-5',
+                'claude-haiku-4-5-20251001',
+                'claude-3-5-sonnet-20241022',
+                'claude-3-5-haiku-20241022',
+                'claude-3-opus-20240229',
+              ];
+            }
+            break;
+          case 'gemini':
+            // Gemini format: { "models": [{ "name": "models/gemini-1.5-flash", ... }] }
+            // The `name` field has a 'models/' prefix that callers strip.
+            if (data.models && Array.isArray(data.models)) {
+              modelList = data.models
+                .map((m: any) => (m.name || '').replace(/^models\//, ''))
+                .filter((id: string) => id && id.toLowerCase().includes('gemini'));
+            }
+            if (modelList.length === 0) {
+              modelList = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b', 'gemini-2.0-flash-exp'];
+            }
+            break;
+          case 'ollama':
+          case 'custom':
+          default:
+            // Ollama format: { "models": [{ "name": "model_name", ... }] }
+            modelList = data.models?.map((model: any) => model.name) || [];
+            break;
+        }
+      } else {
+        // Speaches format: { "data": [{ "id": "model_id", ... }] }
+        const allModels = data.data?.map((model: any) => model.id) || [];
+        
+        if (serviceType === 'stt') {
+          // Filter for whisper models only
+          modelList = allModels.filter((model: string) => model.toLowerCase().includes('whisper'));
+        } else {
+          // Filter out whisper models for TTS
+          modelList = allModels.filter((model: string) => !model.toLowerCase().includes('whisper'));
+        }
+      }
+
+      setModels(prev => ({ ...prev, [serviceType]: modelList }));
+      
+    } catch (error) {
+      setModelErrors(prev => ({ 
+        ...prev, 
+        [serviceType]: `Failed to fetch models: ${error instanceof Error ? error.message : 'Unknown error'}` 
+      }));
+    } finally {
+      setLoadingModels(prev => ({ ...prev, [serviceType]: false }));
+    }
+  };
+
+  const tabs = [
+    { id: 'stt', name: 'Listening', Icon: Mic },
+    { id: 'tts', name: 'Voice', Icon: Volume2 },
+    { id: 'chat', name: 'AI Brain', Icon: MessageSquare },
+    { id: 'prompts', name: 'Conversation Style', Icon: PenLine },
+    { id: 'data', name: 'Your Data', Icon: Database }
+  ];
+
+  return (
+    <div className="max-w-4xl mx-auto px-12 lg:px-16 py-14">
+      <div className="flex items-center mb-4">
+        <span className="editorial-rule" aria-hidden="true" />
+        <span className="text-[0.7rem] uppercase tracking-[0.22em] text-ink-muted font-sans">
+          Preferences
+        </span>
+      </div>
+      <h1 className="font-sans text-ink font-medium leading-[0.95] tracking-display text-[clamp(2.5rem,5vw,4rem)] mb-10">
+        Settings
+      </h1>
+
+      {message && (
+        <div className={`mb-8 px-4 py-3 border-l-2 ${
+          message.includes('Failed') ? 'border-accent bg-paper-warm' : 'border-ink bg-paper-warm'
+        }`}>
+          <p className="text-[0.9rem] text-ink font-sans">{message}</p>
+        </div>
+      )}
+
+      {/* Tab Navigation — editorial: hairline baseline, ink active marker */}
+      <div className="mb-10">
+        <div className="border-b border-ink/10">
+          <nav className="-mb-px flex gap-8 flex-wrap">
+            {tabs.map((tab) => {
+              const Icon = tab.Icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`py-3 px-1 border-b-2 text-[0.9rem] font-sans flex items-center gap-2 transition-colors ${
+                    isActive
+                      ? 'border-accent text-ink font-medium'
+                      : 'border-transparent text-ink-muted hover:text-ink'
+                  }`}
+                >
+                  <Icon size={14} strokeWidth={1.5} className={isActive ? 'text-accent' : ''} />
+                  {tab.name}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </div>
+
+      <div className="space-y-8">
+        {/* Speech-to-Text Tab */}
+        {activeTab === 'stt' && (
+          <section className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">How Talk Buddy listens to you</h2>
+            <div className="space-y-4">
+              {/* Provider Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Where should speech be processed?
+                </label>
+                <div className="flex gap-4 mb-4 items-center">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="embedded"
+                      checked={preferences.sttProvider === 'embedded'}
+                      onChange={(e) => handleProviderChange('sttProvider', e.target.value as 'embedded' | 'speaches')}
+                      className="mr-2"
+                    />
+                    <Server size={16} className="mr-1" />
+                    <span>Built-in (works offline)</span>
+                    {embeddedInstalled === false ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setPendingProviderSwitch('stt');
+                          setShowInstallModal(true);
+                        }}
+                        className="ml-2 text-xs text-accent hover:text-accent-deep border-b border-accent pb-px"
+                      >
+                        Not installed — Set up
+                      </button>
+                    ) : (
+                      <span className={`ml-2 px-2 py-1 text-xs rounded ${embeddedServerStatus.running ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                        {embeddedServerStatus.running ? 'Running' : 'Stopped'}
+                      </span>
+                    )}
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="speaches"
+                      checked={preferences.sttProvider === 'speaches'}
+                      onChange={(e) => handleProviderChange('sttProvider', e.target.value as any)}
+                      className="mr-2"
+                    />
+                    <ExternalLink size={16} className="mr-1" />
+                    <span>Cloud server</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="groq"
+                      checked={preferences.sttProvider === 'groq'}
+                      onChange={(e) => handleProviderChange('sttProvider', e.target.value as any)}
+                      className="mr-2"
+                    />
+                    <ExternalLink size={16} className="mr-1" />
+                    <span>Groq</span>
+                  </label>
+                </div>
+                <p className="text-sm text-gray-600">
+                  {preferences.sttProvider === 'embedded'
+                    ? 'Understands your speech right on this computer — no internet needed'
+                    : preferences.sttProvider === 'groq'
+                    ? 'Sends your speech to Groq for ultra-fast Whisper transcription'
+                    : 'Sends your speech to a cloud server for processing — needs internet'
+                  }
+                </p>
+              </div>
+
+              {/* URL Configuration - show based on provider */}
+              {(preferences.sttProvider === 'speaches' || preferences.sttProvider === 'groq') && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Server address
+                </label>
+                <div className="flex gap-2">
+                  {preferences.sttProvider === 'groq' ? (
+                    <input
+                      type="text"
+                      value={CHAT_PROVIDER_URLS.groq}
+                      readOnly
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={preferences.sttUrl}
+                      onChange={(e) => setPreferences({ ...preferences, sttUrl: e.target.value })}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="https://speaches.locopuente.org"
+                    />
+                  )}
+                  <button
+                    onClick={() => testService('stt')}
+                    disabled={testing.stt || (preferences.sttProvider !== 'groq' && !preferences.sttUrl)}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {testing.stt ? 'Testing...' : 'Test'}
+                  </button>
+                </div>
+                <p className="mt-1 text-sm text-gray-600">
+                  {preferences.sttProvider === 'groq' ? "The canonical Groq endpoint" : "The address of the speech recognition server"}
+                </p>
+                {testResults.stt && (
+                  <p className={`mt-2 text-sm ${testResults.stt.includes('✅') ? 'text-green-600' : 'text-red-600'}`}>
+                    {testResults.stt}
+                  </p>
+                )}
+              </div>
+              )}
+
+              {(preferences.sttProvider === 'speaches' || preferences.sttProvider === 'groq') && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Secret key (if needed)
+                </label>
+                <ApiKeyInput
+                  value={preferences.sttApiKey}
+                  onChange={(value) => setPreferences({ ...preferences, sttApiKey: value })}
+                  placeholder="Leave empty if not required"
+                  envVarName="STT_API_KEY"
+                  fieldName="sttApiKey"
+                />
+                <p className="mt-1 text-sm text-gray-600">
+                  {preferences.sttApiKey?.startsWith('env:')
+                    ? `Reading key from your computer's settings (${preferences.sttApiKey.substring(4)})`
+                    : 'Your server password — leave empty if your server doesn\'t need one'}
+                </p>
+              </div>
+              )}
+
+              {/* Embedded Server Configuration */}
+              {preferences.sttProvider === 'embedded' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Built-in speech recognition
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={preferences.embeddedSttUrl}
+                      onChange={(e) => setPreferences({ ...preferences, embeddedSttUrl: e.target.value })}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="http://127.0.0.1:8765"
+                      readOnly
+                    />
+                    <button
+                      onClick={() => testService('stt')}
+                      disabled={testing.stt}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {testing.stt ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Running on this computer — no internet needed
+                  </p>
+                  {testResults.stt && (
+                    <p className={`mt-2 text-sm ${testResults.stt.includes('✅') ? 'text-green-600' : 'text-red-600'}`}>
+                      {testResults.stt}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {(preferences.sttProvider === 'speaches' || preferences.sttProvider === 'groq') && (
+              <ModelSelector
+                value={preferences.sttModel}
+                onChange={(value) => setPreferences({ ...preferences, sttModel: value })}
+                placeholder="Choose a listening model"
+                models={models.stt}
+                loading={loadingModels.stt}
+                error={modelErrors.stt}
+                onRefresh={() => fetchModels('stt')}
+                label="Recognition model"
+                description="Which speech recognition engine to use"
+              />
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Text-to-Speech Tab */}
+        {activeTab === 'tts' && (
+          <section className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">How Talk Buddy speaks to you</h2>
+            <div className="space-y-4">
+              {/* Provider Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Where should the voice come from?
+                </label>
+                <div className="flex gap-4 mb-4 items-center">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="embedded"
+                      checked={preferences.ttsProvider === 'embedded'}
+                      onChange={(e) => handleProviderChange('ttsProvider', e.target.value as 'embedded' | 'speaches')}
+                      className="mr-2"
+                    />
+                    <Server size={16} className="mr-1" />
+                    <span>Built-in (works offline)</span>
+                    {embeddedInstalled === false ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setPendingProviderSwitch('tts');
+                          setShowInstallModal(true);
+                        }}
+                        className="ml-2 text-xs text-accent hover:text-accent-deep border-b border-accent pb-px"
+                      >
+                        Not installed — Set up
+                      </button>
+                    ) : (
+                      <span className={`ml-2 px-2 py-1 text-xs rounded ${embeddedServerStatus.running ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                        {embeddedServerStatus.running ? 'Ready' : 'Not running'}
+                      </span>
+                    )}
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="speaches"
+                      checked={preferences.ttsProvider === 'speaches'}
+                      onChange={(e) => handleProviderChange('ttsProvider', e.target.value as 'embedded' | 'speaches')}
+                      className="mr-2"
+                    />
+                    <ExternalLink size={16} className="mr-1" />
+                    <span>Cloud server</span>
+                  </label>
+                </div>
+                <p className="text-sm text-gray-600">
+                  {preferences.ttsProvider === 'embedded'
+                    ? 'Speaks using voices built into this computer (Alan & Amy) — no internet needed'
+                    : 'Sends text to a cloud server which speaks it back — needs internet'
+                  }
+                </p>
+              </div>
+
+              {/* Embedded TTS Configuration */}
+              {preferences.ttsProvider === 'embedded' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Built-in voice engine
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={preferences.embeddedTtsUrl}
+                    onChange={(e) => setPreferences({ ...preferences, embeddedTtsUrl: e.target.value })}
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="http://127.0.0.1:8765"
+                  />
+                  <button
+                    onClick={() => testService('tts')}
+                    disabled={testing.tts || !preferences.embeddedTtsUrl}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {testing.tts ? 'Testing...' : 'Test'}
+                  </button>
+                </div>
+                <p className="mt-1 text-sm text-gray-600">
+                  Running on this computer with Alan (male) and Amy (female) voices
+                </p>
+                {testResults.tts && (
+                  <p className={`mt-2 text-sm ${testResults.tts.includes('✅') ? 'text-green-600' : 'text-red-600'}`}>
+                    {testResults.tts}
+                  </p>
+                )}
+              </div>
+              )}
+
+              {/* Voice Selection for Embedded Server */}
+              {preferences.ttsProvider === 'embedded' && (
+              <div className="border-t pt-4 mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Choose a voice
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Male Voice Preference
+                    </label>
+                    <select
+                      value={preferences.embeddedMaleVoiceId || 'alan'}
+                      onChange={(e) => setPreferences({ ...preferences, embeddedMaleVoiceId: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="alan">Alan (British)</option>
+                      <option value="amy">Amy (American)</option>
+                    </select>
+                    <p className="mt-1 text-sm text-gray-600">
+                      Voice used when scenario calls for male character
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Female Voice Preference
+                    </label>
+                    <select
+                      value={preferences.embeddedFemaleVoiceId || 'amy'}
+                      onChange={(e) => setPreferences({ ...preferences, embeddedFemaleVoiceId: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="amy">Amy (American)</option>
+                      <option value="alan">Alan (British)</option>
+                    </select>
+                    <p className="mt-1 text-sm text-gray-600">
+                      Voice used when scenario calls for female character
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-3 text-sm text-gray-500">
+                  💡 You can use Alan for all conversations or Amy for all conversations regardless of scenario gender
+                </p>
+                
+                {/* Speech Speed Control */}
+                <div className="mt-4 border-t pt-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Voice speed
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm text-gray-500 min-w-[2rem]">Slower</span>
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="1.5"
+                      step="0.1"
+                      value={preferences.embeddedSpeechSpeed}
+                      onChange={(e) => setPreferences({ ...preferences, embeddedSpeechSpeed: e.target.value })}
+                      className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                    />
+                    <span className="text-sm text-gray-500 min-w-[2rem]">Faster</span>
+                  </div>
+                  <p className="mt-2 text-sm text-gray-600">
+                    Drag left for slower speech, right for faster.
+                  </p>
+                </div>
+              </div>
+              )}
+
+              {/* URL Configuration - show based on provider */}
+              {preferences.ttsProvider === 'speaches' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Server address
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={preferences.ttsUrl}
+                    onChange={(e) => setPreferences({ ...preferences, ttsUrl: e.target.value })}
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="https://speaches.locopuente.org"
+                  />
+                  <button
+                    onClick={() => testService('tts')}
+                    disabled={testing.tts || !preferences.ttsUrl}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {testing.tts ? 'Testing...' : 'Test'}
+                  </button>
+                </div>
+                <p className="mt-1 text-sm text-gray-600">
+                  The address of the voice server
+                </p>
+                {testResults.tts && (
+                  <p className={`mt-2 text-sm ${testResults.tts.includes('✅') ? 'text-green-600' : 'text-red-600'}`}>
+                    {testResults.tts}
+                  </p>
+                )}
+              </div>
+              )}
+
+              {preferences.ttsProvider === 'speaches' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Secret key (if needed)
+                </label>
+                <ApiKeyInput
+                  value={preferences.ttsApiKey}
+                  onChange={(value) => setPreferences({ ...preferences, ttsApiKey: value })}
+                  placeholder="Leave empty if not required"
+                  envVarName="TTS_API_KEY"
+                  fieldName="ttsApiKey"
+                />
+                <p className="mt-1 text-sm text-gray-600">
+                  {preferences.ttsApiKey?.startsWith('env:')
+                    ? `Reading key from your computer's settings (${preferences.ttsApiKey.substring(4)})`
+                    : 'Your server password — leave empty if your server doesn\'t need one'}
+                </p>
+              </div>
+              )}
+
+              {/* External TTS Configuration - only show when external provider selected */}
+              {preferences.ttsProvider === 'speaches' && (
+              <>
+                <div className="border-t pt-4 mt-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Default Voice
+                  </label>
+                  <div className="flex gap-4 mb-4">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        value="male"
+                        checked={preferences.voice === 'male'}
+                        onChange={(e) => setPreferences({ ...preferences, voice: e.target.value as 'male' | 'female' })}
+                        className="mr-2"
+                      />
+                      <span>Male</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        value="female"
+                        checked={preferences.voice === 'female'}
+                        onChange={(e) => setPreferences({ ...preferences, voice: e.target.value as 'male' | 'female' })}
+                        className="mr-2"
+                      />
+                      <span>Female</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Voice speed
+                  </label>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0.5"
+                    max="2.0"
+                    value={preferences.ttsSpeed}
+                    onChange={(e) => setPreferences({ ...preferences, ttsSpeed: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="1.25"
+                  />
+                  <p className="mt-1 text-sm text-gray-600">
+                    How fast the AI speaks (0.5 = slow, 1.0 = normal, 2.0 = fast)
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Your-turn cue
+                  </label>
+                  <select
+                    value={preferences.conversationCue}
+                    onChange={(e) => setPreferences({ ...preferences, conversationCue: e.target.value as 'rise' | 'click' | 'none' })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="rise">Rise — a soft two-note lift</option>
+                    <option value="click">Click — a quick tactile tick</option>
+                    <option value="none">None — silence</option>
+                  </select>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Subtle audio cue played when the AI finishes speaking and it's your turn.
+                    Respects the mute toggle in the conversation view.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Push-to-talk mode
+                  </label>
+                  <select
+                    value={preferences.pttMode}
+                    onChange={(e) => setPreferences({ ...preferences, pttMode: e.target.value as 'hold' | 'toggle' })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="hold">Hold — press and hold space to talk</option>
+                    <option value="toggle">Toggle — tap space to start, tap again to stop</option>
+                  </select>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Hold is the default and works like a walkie-talkie. Toggle is friendlier for
+                    longer turns or for users who find holding a key awkward.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Appearance
+                  </label>
+                  <select
+                    value={preferences.theme}
+                    onChange={(e) => setPreferences({ ...preferences, theme: e.target.value as 'light' | 'dark' | 'system' })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="system">Match system</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Dark mode is designed for late-night practice — the warm-paper-and-soft-ink
+                    character is preserved, just inverted.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <ModelSelector
+                    value={preferences.maleTTSModel}
+                    onChange={(value) => setPreferences({ ...preferences, maleTTSModel: value })}
+                    placeholder="Choose a male voice model"
+                    models={models.tts}
+                    loading={loadingModels.tts}
+                    error={modelErrors.tts}
+                    onRefresh={() => fetchModels('tts')}
+                    label="Male voice model"
+                    description="Which voice engine to use for male speakers"
+                  />
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Male voice name
+                    </label>
+                    <input
+                      type="text"
+                      value={preferences.maleVoice}
+                      onChange={(e) => setPreferences({ ...preferences, maleVoice: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="am_adam"
+                    />
+                    <p className="mt-1 text-sm text-gray-600">
+                      The specific voice for male speakers
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <ModelSelector
+                    value={preferences.femaleTTSModel}
+                    onChange={(value) => setPreferences({ ...preferences, femaleTTSModel: value })}
+                    placeholder="Choose a female voice model"
+                    models={models.tts}
+                    loading={loadingModels.tts}
+                    error={modelErrors.tts}
+                    onRefresh={() => fetchModels('tts')}
+                    label="Female voice model"
+                    description="Which voice engine to use for female speakers"
+                  />
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Female voice name
+                    </label>
+                    <input
+                      type="text"
+                      value={preferences.femaleVoice}
+                      onChange={(e) => setPreferences({ ...preferences, femaleVoice: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="af_bella"
+                    />
+                    <p className="mt-1 text-sm text-gray-600">
+                      The specific voice for female speakers
+                    </p>
+                  </div>
+                </div>
+              </>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Chat Model Tab */}
+        {activeTab === 'chat' && (
+          <section className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">The AI that drives conversations</h2>
+            <div className="space-y-4">
+              {/* Provider Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Which AI service should power your conversations?
+                </label>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {[
+                    { value: 'anthropic', label: 'Anthropic (Claude)' },
+                    { value: 'openai', label: 'OpenAI (GPT)' },
+                    { value: 'gemini', label: 'Google (Gemini)' },
+                    { value: 'groq', label: 'Groq' },
+                    { value: 'ollama', label: 'Ollama' },
+                    { value: 'custom', label: 'Custom/Other' }
+                  ].map(provider => (
+                    <label key={provider.value} className="flex items-center space-x-2">
+                      <input
+                        type="radio"
+                        value={provider.value}
+                        checked={preferences.chatProvider === provider.value}
+                        onChange={(e) => setPreferences({ ...preferences, chatProvider: e.target.value as any })}
+                        className="text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm">{provider.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* URL field: editable for Ollama/Custom, read-only for hosted
+                  providers that have canonical endpoints. */}
+              {(preferences.chatProvider === 'anthropic' ||
+                preferences.chatProvider === 'openai' ||
+                preferences.chatProvider === 'groq' ||
+                preferences.chatProvider === 'gemini') ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Connection
+                  </label>
+                  <div className="flex gap-2 items-center">
+                    <div className="flex-1 px-4 py-2 border border-ink/10 bg-paper-warm text-ink-muted font-mono text-sm">
+                      {CHAT_PROVIDER_URLS[preferences.chatProvider as keyof typeof CHAT_PROVIDER_URLS]}
+                    </div>
+                    <button
+                      onClick={() => testService('chat')}
+                      disabled={testing.chat}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {testing.chat ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Connected automatically — nothing to configure.
+                  </p>
+                  {testResults.chat && (
+                    <p className={`mt-2 text-sm ${testResults.chat.includes('✅') ? 'text-green-600' : 'text-red-600'}`}>
+                      {testResults.chat}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Server address
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={preferences.ollamaUrl}
+                      onChange={(e) => setPreferences({ ...preferences, ollamaUrl: e.target.value })}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder={
+                        preferences.chatProvider === 'ollama' ? "http://localhost:11434 or https://ollama.serveur.au" :
+                        "Enter API endpoint URL"
+                      }
+                    />
+                    <button
+                      onClick={() => testService('chat')}
+                      disabled={testing.chat || !preferences.ollamaUrl}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {testing.chat ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-600">
+                    {preferences.chatProvider === 'ollama'
+                      ? 'Where your Ollama server is running'
+                      : 'The address of your custom AI service'}
+                  </p>
+                  {testResults.chat && (
+                    <p className={`mt-2 text-sm ${testResults.chat.includes('✅') ? 'text-green-600' : 'text-red-600'}`}>
+                      {testResults.chat}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Secret key{preferences.chatProvider === 'ollama' ? ' (usually not needed)' : ''}
+                </label>
+                <ApiKeyInput
+                  value={preferences.ollamaApiKey}
+                  onChange={(value) => setPreferences({ ...preferences, ollamaApiKey: value })}
+                  placeholder={
+                    preferences.chatProvider === 'anthropic' ? 'sk-ant-... or leave empty' :
+                    preferences.chatProvider === 'openai' ? 'sk-... or leave empty' :
+                    preferences.chatProvider === 'groq' ? 'gsk_... or leave empty' :
+                    preferences.chatProvider === 'gemini' ? 'AIza... or leave empty' :
+                    'Leave empty for local services'
+                  }
+                  envVarName={CHAT_PROVIDER_ENV_VARS[preferences.chatProvider as keyof typeof CHAT_PROVIDER_ENV_VARS] || 'API_KEY'}
+                  fieldName="chatApiKey"
+                />
+                <p className="mt-1 text-sm text-gray-600">
+                  {preferences.ollamaApiKey?.startsWith('env:')
+                    ? `Reading key from your computer's settings (${preferences.ollamaApiKey.substring(4)})`
+                    : preferences.chatProvider === 'ollama'
+                      ? 'Your Ollama password — leave empty if you don\'t have one'
+                      : 'The secret key from your AI provider — you get this when you sign up'}
+                </p>
+              </div>
+
+              <ModelSelector
+                value={preferences.ollamaModel}
+                onChange={(value) => setPreferences({ ...preferences, ollamaModel: value })}
+                placeholder="Choose an AI model"
+                models={models.chat}
+                loading={loadingModels.chat}
+                error={modelErrors.chat}
+                onRefresh={() => fetchModels('chat')}
+                label="AI model"
+                description="Which AI model should power your conversations"
+              />
+              <div className="mt-2 text-xs text-gray-500">
+                <p>Some popular choices:</p>
+                <p>• Claude (Anthropic): claude-sonnet-4-5, claude-haiku-4-5</p>
+                <p>• GPT (OpenAI): gpt-4o, gpt-4o-mini</p>
+                <p>• Gemini (Google): gemini-1.5-flash, gemini-1.5-pro</p>
+                <p>• Ollama (local): llama3, mistral, phi3</p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Prompts Tab */}
+        {activeTab === 'prompts' && (
+          <section className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">How the AI behaves in conversations</h2>
+            <div className="space-y-6">
+              {/* Template Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Conversation style
+                </label>
+                <select
+                  value={preferences.promptTemplate}
+                  onChange={(e) => {
+                    const template = e.target.value;
+                    setPreferences({ 
+                      ...preferences, 
+                      promptTemplate: template,
+                      customPrompt: template === 'custom' ? preferences.customPrompt : ''
+                    });
+                  }}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="natural">Natural Conversation</option>
+                  <option value="educational">Educational/Detailed</option>
+                  <option value="concise">Brief/Concise</option>
+                  <option value="business">Business Professional</option>
+                  <option value="supportive">Supportive/Encouraging</option>
+                  <option value="custom">Custom</option>
+                </select>
+                
+                {/* Template Description */}
+                <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                  <p className="text-sm text-gray-700">
+                    <strong>{PROMPT_TEMPLATES[preferences.promptTemplate as keyof typeof PROMPT_TEMPLATES]?.name || 'Custom Template'}:</strong>
+                    {' '}
+                    {PROMPT_TEMPLATES[preferences.promptTemplate as keyof typeof PROMPT_TEMPLATES]?.description || 'Your personalized prompt configuration'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Prompt Text Area */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Instructions for the AI
+                </label>
+                <textarea
+                  value={preferences.promptTemplate === 'custom' 
+                    ? preferences.customPrompt 
+                    : PROMPT_TEMPLATES[preferences.promptTemplate as keyof typeof PROMPT_TEMPLATES]?.prompt || ''}
+                  onChange={(e) => {
+                    if (preferences.promptTemplate === 'custom') {
+                      setPreferences({ ...preferences, customPrompt: e.target.value });
+                    }
+                  }}
+                  disabled={preferences.promptTemplate !== 'custom'}
+                  rows={8}
+                  className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                    preferences.promptTemplate !== 'custom' ? 'bg-gray-50 text-gray-600' : ''
+                  }`}
+                  placeholder={preferences.promptTemplate === 'custom' ? 'Write your own instructions for the AI...' : 'These instructions are read-only. Pick "Custom" above to write your own.'}
+                />
+                <p className="mt-1 text-sm text-gray-600">
+                  {preferences.promptTemplate === 'custom'
+                    ? 'Write your own rules for how the AI should behave in conversations'
+                    : 'These instructions are built in. Pick "Custom" above to write your own.'
+                  }
+                </p>
+              </div>
+
+              {/* Advanced Options */}
+              <div className="border-t pt-4">
+                <h3 className="text-lg font-medium text-gray-700 mb-3">Advanced</h3>
+                <div className="space-y-3">
+                  {/* Prompt Behavior */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      How should these instructions combine with each scenario?
+                    </label>
+                    <div className="space-y-2">
+                      <label className="flex items-center">
+                        <input
+                          type="radio"
+                          name="promptBehavior"
+                          value="enhance"
+                          checked={preferences.promptBehavior === 'enhance'}
+                          onChange={() => setPreferences({ ...preferences, promptBehavior: 'enhance' })}
+                          className="mr-2"
+                        />
+                        <div>
+                          <span className="text-sm font-medium">Add to each scenario's instructions</span>
+                          <span className="text-sm text-gray-600 ml-1">(recommended)</span>
+                          <p className="text-sm text-gray-600">Your style instructions are combined with each scenario's own instructions</p>
+                        </div>
+                      </label>
+                      
+                      <label className="flex items-center">
+                        <input
+                          type="radio"
+                          name="promptBehavior"
+                          value="override"
+                          checked={preferences.promptBehavior === 'override'}
+                          onChange={() => setPreferences({ ...preferences, promptBehavior: 'override' })}
+                          className="mr-2"
+                        />
+                        <div>
+                          <span className="text-sm font-medium">Replace scenario instructions</span>
+                          <p className="text-sm text-gray-600">Use only your style instructions, ignore what each scenario says</p>
+                        </div>
+                      </label>
+                      
+                      <label className="flex items-center">
+                        <input
+                          type="radio"
+                          name="promptBehavior"
+                          value="scenario-only"
+                          checked={preferences.promptBehavior === 'scenario-only'}
+                          onChange={() => setPreferences({ ...preferences, promptBehavior: 'scenario-only' })}
+                          className="mr-2"
+                        />
+                        <div>
+                          <span className="text-sm font-medium">Use each scenario's own instructions only</span>
+                          <p className="text-sm text-gray-600">Don't add your style instructions — let each scenario control the AI entirely</p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                  
+                  <label className="flex items-start">
+                    <input
+                      type="checkbox"
+                      checked={preferences.includeResponseFormat}
+                      onChange={(e) => setPreferences({ ...preferences, includeResponseFormat: e.target.checked })}
+                      className="mt-1 mr-3"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">Keep responses conversational</span>
+                      <p className="text-sm text-gray-600">Tell the AI to respond like a real person, not a textbook</p>
+                    </div>
+                  </label>
+                  
+                  <label className="flex items-start">
+                    <input
+                      type="checkbox"
+                      checked={preferences.addModelOptimizations}
+                      onChange={(e) => setPreferences({ ...preferences, addModelOptimizations: e.target.checked })}
+                      className="mt-1 mr-3"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">Sound more natural</span>
+                      <p className="text-sm text-gray-600">Encourage the AI to use contractions and informal language</p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Preview Section */}
+              <div className="border-t pt-4">
+                <h3 className="text-lg font-medium text-gray-700 mb-3">Preview</h3>
+                <div className="bg-gray-50 rounded-lg p-4 border">
+                  <p className="text-sm text-gray-600 mb-2">This is what the AI reads before each conversation:</p>
+                  <div className="bg-white rounded border p-3 text-sm font-mono text-gray-800 max-h-64 overflow-y-auto">
+                    {(() => {
+                      let fullPrompt = '';
+                      
+                      // Base prompt
+                      const basePrompt = preferences.promptTemplate === 'custom' 
+                        ? preferences.customPrompt 
+                        : PROMPT_TEMPLATES[preferences.promptTemplate as keyof typeof PROMPT_TEMPLATES]?.prompt || '';
+                      
+                      fullPrompt += basePrompt;
+                      
+                      // Add response format if enabled
+                      if (preferences.includeResponseFormat) {
+                        fullPrompt += '\n\nResponse Format Guidelines:\n- Keep responses natural and conversational\n- Ask one question at a time\n- Respond in a way that encourages continued dialogue';
+                      }
+                      
+                      // Add model optimizations if enabled
+                      if (preferences.addModelOptimizations) {
+                        fullPrompt += '\n\nModel Instructions:\n- Prioritize clarity and engagement\n- Avoid repetitive patterns\n- Maintain consistency in tone and style';
+                      }
+                      
+                      return fullPrompt || 'No prompt configured';
+                    })()}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {preferences.promptBehavior === 'override'
+                      ? 'These instructions will be used for every conversation, replacing each scenario\'s own instructions.'
+                      : preferences.promptBehavior === 'enhance'
+                      ? 'These instructions will be added to each scenario\'s own instructions.'
+                      : 'Each scenario uses its own instructions only — nothing is added.'
+                    }
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Data Management & Documentation Tab */}
+        {activeTab === 'data' && (
+          <div className="space-y-8">
+            {/* Data Management */}
+            <section className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold text-gray-800 mb-4">Your data</h2>
+              <div className="flex gap-4 flex-wrap">
+                <button
+                  onClick={exportData}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  <Download size={20} />
+                  Export Data
+                </button>
+                <button
+                  onClick={importData}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  <Upload size={20} />
+                  Import Data
+                </button>
+              </div>
+              <p className="mt-2 text-sm text-gray-600">
+                Export or import your scenarios, sessions, and preferences
+              </p>
+              
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <h3 className="text-lg font-medium text-gray-800 mb-3">Start fresh</h3>
+                <button
+                  onClick={handleResetDatabase}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+                >
+                  <AlertTriangle size={20} />
+                  Clear all my data
+                </button>
+                <p className="mt-2 text-sm text-red-600">
+                  This permanently deletes all your scenarios, conversations, and practice packs. Your settings are kept.
+                </p>
+              </div>
+            </section>
+
+            {/* Documentation Links */}
+            <section className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold text-gray-800 mb-4">Help &amp; documentation</h2>
+              <div className="space-y-2">
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.electronAPI.shell.openExternal('https://speaches.locopuente.org/docs');
+                  }}
+                  className="flex items-center gap-2 text-blue-600 hover:text-blue-700"
+                >
+                  <ExternalLink size={16} />
+                  Speech server documentation
+                </a>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.electronAPI.shell.openExternal('https://ollama.ai');
+                  }}
+                  className="flex items-center gap-2 text-blue-600 hover:text-blue-700"
+                >
+                  <ExternalLink size={16} />
+                  Ollama (local AI) documentation
+                </a>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* Save Button */}
+        <div className="flex justify-end">
+          <button
+            onClick={savePreferences}
+            disabled={saving}
+            className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Save size={20} />
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+
+        {/* About & help — these pages hang off Settings now that the
+            sidebar is gone */}
+        <div className="mt-10 pt-6 border-t border-ink/10 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+          {[
+            { label: 'Help', path: '/help' },
+            { label: 'Documentation', path: '/documentation' },
+            { label: 'About', path: '/about' },
+            { label: 'License', path: '/license' },
+          ].map(({ label, path }) => (
+            <button
+              key={path}
+              onClick={() => navigate(path)}
+              className="text-ink-muted hover:text-accent transition-colors"
+            >
+              {label} →
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <EmbeddedInstallModal
+        open={showInstallModal}
+        onClose={() => {
+          setShowInstallModal(false);
+          setPendingProviderSwitch(null);
+        }}
+        onSuccess={handleInstallSuccess}
+      />
+    </div>
+  );
+}
