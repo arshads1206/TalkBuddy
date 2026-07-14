@@ -1,5 +1,4 @@
 # Talk Buddy - Hybrid Edition
-By **Arshad**
 
 <!-- BADGES:START -->
 [![ai](https://img.shields.io/badge/-ai-ff6f00?style=flat-square)](https://github.com/topics/ai) [![conversation-practice](https://img.shields.io/badge/-conversation--practice-blue?style=flat-square)](https://github.com/topics/conversation-practice) [![cross-platform](https://img.shields.io/badge/-cross--platform-blue?style=flat-square)](https://github.com/topics/cross-platform) [![electron](https://img.shields.io/badge/-electron-47848f?style=flat-square)](https://github.com/topics/electron) [![fastapi](https://img.shields.io/badge/-fastapi-009688?style=flat-square)](https://github.com/topics/fastapi) [![browser](https://img.shields.io/badge/-browser--support-brightgreen?style=flat-square)](https://github.com/topics/browser) [![typescript](https://img.shields.io/badge/-typescript-3178c6?style=flat-square)](https://github.com/topics/typescript)
