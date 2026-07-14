@@ -1,3 +1,4 @@
+import { ChatService } from '../platform/ChatService';
 // Speaches service for STT and TTS.
 //
 // All HTTP calls to the Speaches server are routed through the Electron
@@ -7,6 +8,7 @@
 // direct renderer fetches get blocked at the preflight stage. Main-process
 // fetch has no CORS layer and works against any reachable server.
 import { getPreference } from './sqlite';
+import { SpeechService } from '../platform/SpeechService';
 import { TranscriptionResult, SpeechGenerationOptions } from '../types';
 import { resolveApiKey } from './chat';
 import { SpeachesSTT, SpeachesTTS } from './config';
@@ -58,7 +60,7 @@ export async function transcribeAudio(audioBlob: Blob, cfg: SpeachesSTT): Promis
   const arrayBuffer = await audioBlob.arrayBuffer();
   const audioBuffer = new Uint8Array(arrayBuffer);
 
-  const result = await window.electronAPI.speaches.transcribe({
+  const result = await SpeechService.transcribe({
     url: `${baseUrl}/v1/audio/transcriptions`,
     apiKey,
     audioBuffer,
@@ -100,7 +102,7 @@ export async function generateSpeech(options: SpeechGenerationOptions, cfg: Spea
   const ttsSpeed = cfg.speed;
   const apiKey = await resolveApiKey(cfg.apiKey);
 
-  const result = await window.electronAPI.speaches.speak({
+  const result = await SpeechService.speak({
     url: `${baseUrl}/v1/audio/speech`,
     apiKey,
     payload: {
@@ -147,7 +149,7 @@ export async function getAvailableVoices(): Promise<string[]> {
     const headers: Record<string, string> = {};
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
-    const response = await window.electronAPI.fetch({
+    const response = await ChatService.fetch({
       url: `${baseUrl}/v1/audio/speech/voices`,
       options: { method: 'GET', headers },
     });
@@ -181,7 +183,7 @@ async function probeServer(baseUrl: string, apiKey: string): Promise<{ ok: boole
   const endpoints = ['/v1/models', '/health'];
   for (const endpoint of endpoints) {
     try {
-      const response = await window.electronAPI.fetch({
+      const response = await ChatService.fetch({
         url: `${clean}${endpoint}`,
         options: { method: 'GET', headers },
       });

@@ -1,3 +1,4 @@
+import { AppService } from '../platform/AppService';
 // Custom hook for fetching available models from various providers
 // Handles model discovery with proper error handling and type safety
 

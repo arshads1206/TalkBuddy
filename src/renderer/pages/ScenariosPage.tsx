@@ -1,3 +1,4 @@
+import { AppService } from '../platform/AppService';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
@@ -213,7 +214,7 @@ export function ScenariosPage() {
 
   const handleImport = async () => {
     try {
-      const result = await window.electronAPI.dialog.openFile();
+      const result = await AppService.openFile();
       if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
         return;
       }

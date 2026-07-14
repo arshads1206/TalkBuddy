@@ -2,6 +2,8 @@
 import { getPreference } from './sqlite';
 import { ConversationMessage } from '../types';
 import { resolveChat, loadPreferences } from './config';
+import { ChatService } from '../platform/ChatService';
+import { AppService } from '../platform/AppService';
 
 // Default prompt templates (same as in SettingsPage)
 // Canonical prompt templates. Exported so the Settings UI can render
@@ -114,7 +116,7 @@ export async function resolveApiKey(storedValue: string | null | undefined): Pro
   const envVarName = storedValue.substring(4).trim();
   if (!envVarName) return '';
   try {
-    const resolved = await window.electronAPI.app.getEnvVar(envVarName);
+    const resolved = await AppService.getEnvVar(envVarName);
     return resolved || '';
   } catch (err) {
     console.warn(`resolveApiKey: failed to read env var ${envVarName}:`, err);
@@ -259,7 +261,7 @@ async function generateGeminiResponse(
   console.log('Gemini API request:', { url: url.replace(/key=[^&]+/, 'key=***'), model });
 
   try {
-    const response = await window.electronAPI.fetch({
+    const response = await ChatService.fetch({
       url,
       options: {
         method: 'POST',
@@ -411,7 +413,7 @@ async function generateChatCompletion(
     });
     
     // Use IPC to make the request through the main process
-    const response = await window.electronAPI.fetch({
+    const response = await ChatService.fetch({
       url: fullUrl,
       options: {
         method: 'POST',
@@ -558,7 +560,7 @@ async function generateOllamaResponse(
 
     // Try 1: Standard Ollama /api/chat endpoint (newer versions)
     console.log('Trying /api/chat endpoint...');
-    let response = await window.electronAPI.fetch({
+    let response = await ChatService.fetch({
       url: `${baseUrl}/api/chat`,
       options: {
         method: 'POST',
@@ -587,7 +589,7 @@ async function generateOllamaResponse(
 
     // Try 2: Standard Ollama /api/generate endpoint (older versions)
     console.log('Trying /api/generate endpoint...');
-    response = await window.electronAPI.fetch({
+    response = await ChatService.fetch({
       url: `${baseUrl}/api/generate`,
       options: {
         method: 'POST',
@@ -616,7 +618,7 @@ async function generateOllamaResponse(
 
     // Try 3: Check if it's an OpenAI-compatible endpoint
     console.log('Trying OpenAI-compatible /v1/chat/completions endpoint...');
-    response = await window.electronAPI.fetch({
+    response = await ChatService.fetch({
       url: `${baseUrl}/v1/chat/completions`,
       options: {
         method: 'POST',
@@ -650,7 +652,7 @@ async function generateOllamaResponse(
     // Try 4: Check available models using correct Ollama endpoint /api/tags
     console.log('Checking available models via /api/tags...');
     try {
-      const tagsResponse = await window.electronAPI.fetch({
+      const tagsResponse = await ChatService.fetch({
         url: `${baseUrl}/api/tags`,
         options: {
           method: 'GET',

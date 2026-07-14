@@ -263,11 +263,19 @@ def text_to_speech(text: str, voice_type: str = "female", voice_id: int = None, 
                 if not os.path.exists(piper_bin):
                     piper_bin = "piper"
 
+            # CRITICAL: piper.exe is a Python wrapper that reads sys.stdin.
+            # On Windows, sys.stdin defaults to cp1252 and uses surrogateescape, 
+            # turning valid UTF-8 into crash-inducing \udcXX surrogates.
+            # We MUST set PYTHONIOENCODING=utf-8 to read the input correctly.
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+
             # Run piper command
             process = subprocess.run(
                 [piper_bin, "--model", model_path, "--output_file", temp_path],
                 input=text.encode('utf-8'),
                 capture_output=True,
+                env=env,
                 timeout=10
             )
             
@@ -490,6 +498,13 @@ def create_speech():
         text = data.get('input', '')
         if not text:
             return jsonify({"error": "No input text provided"}), 400
+            
+        logger.info("TTS text: %r", text)
+        logger.info("Length: %d", len(text))
+        logger.info("Codepoints: %s", [hex(ord(c)) for c in text])
+            
+        # Sanitize text to remove lone surrogates or invalid unicode that crashes Piper
+        text = text.encode('utf-8', 'replace').decode('utf-8')
         
         # Extract voice parameters
         model = data.get('model', '')

@@ -1,3 +1,4 @@
+import { AppService } from '../platform/AppService';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, Heart, Code2, Mic, Users } from 'lucide-react';
@@ -9,8 +10,8 @@ export function AboutPage() {
 
   useEffect(() => {
     // Get app version
-    if (window.electronAPI?.app?.getVersion) {
-      window.electronAPI.app.getVersion().then(version => {
+    if (AppService.getVersion) {
+      AppService.getVersion().then(version => {
         setAppVersion(version);
       });
     }
@@ -159,8 +160,8 @@ export function AboutPage() {
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                if (window.electronAPI?.shell?.openExternal) {
-                  window.electronAPI.shell.openExternal('https://github.com/michael-borck/talk-buddy');
+                if (AppService.openExternal) {
+                  AppService.openExternal('https://github.com/michael-borck/talk-buddy');
                 }
               }}
               className="flex items-center gap-3 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"

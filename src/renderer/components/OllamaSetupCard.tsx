@@ -1,3 +1,4 @@
+import { AppService } from '../platform/AppService';
 // Shown on the home screen when no AI Brain is connected. Walks the
 // user from "nothing installed" to "connected" without a terminal:
 // detect a local Ollama → guide through the official installer if
@@ -84,7 +85,7 @@ export function OllamaSetupCard({ onConnected }: { onConnected: () => void }) {
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2">
             <button
-              onClick={() => window.electronAPI.shell.openExternal(OLLAMA_DOWNLOAD_PAGE)}
+              onClick={() => AppService.openExternal(OLLAMA_DOWNLOAD_PAGE)}
               className="btn-gradient px-5 py-2 text-[0.85rem]"
             >
               Get Ollama (free)

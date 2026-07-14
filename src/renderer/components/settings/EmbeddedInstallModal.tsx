@@ -1,3 +1,5 @@
+import { EmbeddedService } from '../../platform/EmbeddedService';
+import { AppService } from '../../platform/AppService';
 import { useEffect, useRef, useState } from 'react';
 import { X, Terminal } from 'lucide-react';
 
@@ -40,7 +42,7 @@ export function EmbeddedInstallModal({ open, onClose, onSuccess }: EmbeddedInsta
     setChunks([]);
     setFinished(null);
     setRunning(false);
-    void window.electronAPI.embeddedInstall.check().then((state) => {
+    void EmbeddedService.install.check().then((state) => {
       setPreflight({
         pythonAvailable: state.pythonAvailable,
         hasSetupScript: state.hasSetupScript,
@@ -54,7 +56,7 @@ export function EmbeddedInstallModal({ open, onClose, onSuccess }: EmbeddedInsta
   // Subscribe to live output while the modal is open.
   useEffect(() => {
     if (!open) return;
-    const unsubscribe = window.electronAPI.embeddedInstall.onOutput((payload) => {
+    const unsubscribe = EmbeddedService.install.onOutput((payload) => {
       setChunks((prev) => [...prev, payload]);
     });
     return unsubscribe;
@@ -71,7 +73,7 @@ export function EmbeddedInstallModal({ open, onClose, onSuccess }: EmbeddedInsta
     setRunning(true);
     setFinished(null);
     setChunks([]);
-    const result = await window.electronAPI.embeddedInstall.run();
+    const result = await EmbeddedService.install.run();
     setRunning(false);
     setFinished(result);
     if (result.ok) {
@@ -80,7 +82,7 @@ export function EmbeddedInstallModal({ open, onClose, onSuccess }: EmbeddedInsta
   };
 
   const handleCancel = async () => {
-    await window.electronAPI.embeddedInstall.cancel();
+    await EmbeddedService.install.cancel();
   };
 
   const handleClose = () => {
@@ -186,7 +188,7 @@ export function EmbeddedInstallModal({ open, onClose, onSuccess }: EmbeddedInsta
                     <li>
                       Windows:{' '}
                       <button
-                        onClick={() => window.electronAPI.shell.openExternal('https://www.python.org/downloads/')}
+                        onClick={() => AppService.openExternal('https://www.python.org/downloads/')}
                         className="text-accent hover:text-accent-deep border-b border-accent"
                       >
                         python.org/downloads

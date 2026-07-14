@@ -1,3 +1,6 @@
+import { ChatService } from '../platform/ChatService';
+import { EmbeddedService } from '../platform/EmbeddedService';
+import { AppService } from '../platform/AppService';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getAllPreferences, setPreference, resetDatabase } from '../services/sqlite';
@@ -357,7 +360,7 @@ export function SettingsPage() {
 
   const refreshEmbeddedInstallState = async () => {
     try {
-      const state = await window.electronAPI.embeddedInstall.check();
+      const state = await EmbeddedService.install.check();
       setEmbeddedInstalled(state.installed);
     } catch (err) {
       console.warn('Failed to check embedded install state:', err);
@@ -392,12 +395,12 @@ export function SettingsPage() {
     setPendingProviderSwitch(null);
     // Kick the embedded server start in the background so the user can
     // start using it immediately after closing the modal.
-    void window.electronAPI.embeddedServerStart().then(() => checkEmbeddedServerStatus());
+    void EmbeddedService.start().then(() => checkEmbeddedServerStatus());
   };
 
   const checkEmbeddedServerStatus = async () => {
     try {
-      const status = await window.electronAPI.embeddedServerStatus();
+      const status = await EmbeddedService.status();
       setEmbeddedServerStatus(status);
       
       // Load voices if server is running
@@ -637,7 +640,7 @@ export function SettingsPage() {
           endpoint = `${url}/api/tags`;
         }
 
-        const response = await window.electronAPI.fetch({
+        const response = await ChatService.fetch({
           url: endpoint,
           options: { method: 'GET', headers },
         });
@@ -680,7 +683,7 @@ export function SettingsPage() {
       const cleanUrl = baseUrl ? (baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl) : '';
 
       // First, try a simple GET request to the base URL to check if server is reachable
-      const baseResponse = await window.electronAPI.fetch({
+      const baseResponse = await ChatService.fetch({
         url: cleanUrl || '',
         options: {
           method: 'GET',
@@ -718,7 +721,7 @@ export function SettingsPage() {
 
       for (const endpoint of commonEndpoints) {
         try {
-          const testResponse = await window.electronAPI.fetch({
+          const testResponse = await ChatService.fetch({
             url: `${cleanUrl}${endpoint}`,
             options: {
               method: 'GET',
@@ -744,7 +747,7 @@ export function SettingsPage() {
       } else {
         // Try one more test with a HEAD request to see if server responds at all
         try {
-          const headResponse = await window.electronAPI.fetch({
+          const headResponse = await ChatService.fetch({
             url: cleanUrl || '',
             options: {
               method: 'HEAD',
@@ -867,7 +870,7 @@ export function SettingsPage() {
         }
       }
 
-      const response = await window.electronAPI.fetch({
+      const response = await ChatService.fetch({
         url: endpoint,
         options: {
           method: 'GET',
@@ -1979,7 +1982,7 @@ export function SettingsPage() {
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
-                    window.electronAPI.shell.openExternal('https://speaches.locopuente.org/docs');
+                    AppService.openExternal('https://speaches.locopuente.org/docs');
                   }}
                   className="flex items-center gap-2 text-blue-600 hover:text-blue-700"
                 >
@@ -1990,7 +1993,7 @@ export function SettingsPage() {
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
-                    window.electronAPI.shell.openExternal('https://ollama.ai');
+                    AppService.openExternal('https://ollama.ai');
                   }}
                   className="flex items-center gap-2 text-blue-600 hover:text-blue-700"
                 >

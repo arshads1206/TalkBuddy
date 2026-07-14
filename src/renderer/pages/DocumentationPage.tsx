@@ -1,3 +1,4 @@
+import { AppService } from '../platform/AppService';
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
@@ -107,8 +108,8 @@ export function DocumentationPage(): JSX.Element {
   };
 
   const openExternal = (url: string) => {
-    if (window.electronAPI?.shell?.openExternal) {
-      window.electronAPI.shell.openExternal(url);
+    if (AppService.openExternal) {
+      AppService.openExternal(url);
     }
   };
 

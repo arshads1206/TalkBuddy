@@ -1,3 +1,4 @@
+import { AppService } from '../platform/AppService';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, Heart, Code2 } from 'lucide-react';
 
@@ -5,8 +6,8 @@ export function LicensePage() {
   const navigate = useNavigate();
 
   const openExternal = (url: string) => {
-    if (window.electronAPI?.shell?.openExternal) {
-      window.electronAPI.shell.openExternal(url);
+    if (AppService.openExternal) {
+      AppService.openExternal(url);
     }
   };
 

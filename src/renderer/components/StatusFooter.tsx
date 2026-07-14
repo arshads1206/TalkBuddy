@@ -1,3 +1,5 @@
+import { ChatService } from '../platform/ChatService';
+import { AppService } from '../platform/AppService';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAllPreferences } from '../services/sqlite';
 import * as speechProvider from '../services/speechProvider';
@@ -82,7 +84,7 @@ export function StatusFooter() {
     let apiKey = prefs.chatApiKey;
     if (apiKey.startsWith('env:')) {
       try {
-        apiKey = (await window.electronAPI.app.getEnvVar(apiKey.substring(4))) || '';
+        apiKey = (await AppService.getEnvVar(apiKey.substring(4))) || '';
       } catch {
         apiKey = '';
       }
@@ -93,7 +95,7 @@ export function StatusFooter() {
     if (prefs.chatProvider === 'gemini') {
       try {
         const url = `${cleanUrl}/v1beta/models${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-        const response = await window.electronAPI.fetch({
+        const response = await ChatService.fetch({
           url,
           options: { method: 'GET', headers: {} },
         });
@@ -130,7 +132,7 @@ export function StatusFooter() {
 
     for (const endpoint of endpoints) {
       try {
-        const response = await window.electronAPI.fetch({
+        const response = await ChatService.fetch({
           url: `${cleanUrl}${endpoint}`,
           options: { method: 'GET', headers },
         });
@@ -212,8 +214,8 @@ export function StatusFooter() {
     window.addEventListener('talkbuddy:status-refresh', handleRefreshEvent);
 
     // App version
-    if (window.electronAPI?.app?.getVersion) {
-      window.electronAPI.app.getVersion().then(setAppVersion);
+    if (AppService.getVersion) {
+      AppService.getVersion().then(setAppVersion);
     }
 
     return () => {

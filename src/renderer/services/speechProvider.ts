@@ -1,3 +1,5 @@
+import { EmbeddedService } from '../platform/EmbeddedService';
+import { AppService } from '../platform/AppService';
 // Speech Provider Abstraction Layer
 // Routes TTS/STT calls to the appropriate service based on user preferences
 
@@ -133,7 +135,7 @@ export const embeddedServer = {
   restart: embeddedService.restartEmbeddedServer,
   status: async () => {
     try {
-      const status = await window.electronAPI.embeddedServerStatus();
+      const status = await EmbeddedService.status();
       return status;
     } catch (error) {
       console.error('Failed to get embedded server status:', error);

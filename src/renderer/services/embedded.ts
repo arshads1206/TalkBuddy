@@ -1,3 +1,4 @@
+import { EmbeddedService } from '../platform/EmbeddedService';
 // Embedded TTS/STT service
 import { TranscriptionResult, SpeechGenerationOptions } from '../types';
 import { EmbeddedTTS } from './config';
@@ -5,7 +6,7 @@ import { EmbeddedTTS } from './config';
 // Get embedded server status from main process
 async function getEmbeddedServerStatus(): Promise<{ running: boolean; url: string; port: number; token?: string }> {
   try {
-    const status = await window.electronAPI.embeddedServerStatus();
+    const status = await EmbeddedService.status();
     return status;
   } catch (error) {
     console.error('Failed to get embedded server status:', error);
@@ -230,7 +231,7 @@ export async function checkTTSConnection(): Promise<boolean> {
 // Server management functions
 export async function startEmbeddedServer(): Promise<boolean> {
   try {
-    const result = await window.electronAPI.embeddedServerStart();
+    const result = await EmbeddedService.start();
     return result.success;
   } catch (error) {
     console.error('Failed to start embedded server:', error);
@@ -240,7 +241,7 @@ export async function startEmbeddedServer(): Promise<boolean> {
 
 export async function stopEmbeddedServer(): Promise<boolean> {
   try {
-    const result = await window.electronAPI.embeddedServerStop();
+    const result = await EmbeddedService.stop();
     return result.success;
   } catch (error) {
     console.error('Failed to stop embedded server:', error);
@@ -250,7 +251,7 @@ export async function stopEmbeddedServer(): Promise<boolean> {
 
 export async function restartEmbeddedServer(): Promise<boolean> {
   try {
-    const result = await window.electronAPI.embeddedServerRestart();
+    const result = await EmbeddedService.restart();
     return result.success;
   } catch (error) {
     console.error('Failed to restart embedded server:', error);

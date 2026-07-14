@@ -29,6 +29,12 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3308',
+        changeOrigin: true,
+      },
+    },
     port: 3307,
     strictPort: true,
   },

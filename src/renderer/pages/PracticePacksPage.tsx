@@ -1,3 +1,5 @@
+import { ChatService } from '../platform/ChatService';
+import { AppService } from '../platform/AppService';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
@@ -137,7 +139,7 @@ export function PracticePacksPage() {
     if (!url) return;
     setImportingUrl(true);
     try {
-      const fetched = await window.electronAPI.fetchText(url);
+      const fetched = await ChatService.fetchText(url);
       if (!fetched.ok || !fetched.text) {
         alert(`Could not fetch the pack: ${fetched.error || 'unknown error'}`);
         return;

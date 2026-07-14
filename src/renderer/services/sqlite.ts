@@ -1,5 +1,8 @@
 // Client-side SQLite service that communicates with Electron main process
 import { Scenario, Session, Pack, PackWithScenarios, SessionPack, SessionPackWithSessions } from '../types';
+import { DatabaseService } from '../platform/DatabaseService';
+import { PreferenceService } from '../platform/PreferenceService';
+import { AppService } from '../platform/AppService';
 
 // Type definitions for Electron API
 interface ElectronAPI {
@@ -88,7 +91,7 @@ declare global {
 
 // Scenario functions
 export async function getScenario(id: string): Promise<Scenario | null> {
-  const result = await window.electronAPI.database.op('scenarios:get', { id });
+  const result = await DatabaseService.op('scenarios:get', { id });
 
   if (!result.success || !result.data || result.data.length === 0) {
     return null;
@@ -103,7 +106,7 @@ export async function getScenario(id: string): Promise<Scenario | null> {
 }
 
 export async function listScenarios(filter?: { category?: string; difficulty?: string }): Promise<Scenario[]> {
-  const result = await window.electronAPI.database.op('scenarios:list', { filter: filter || {} });
+  const result = await DatabaseService.op('scenarios:list', { filter: filter || {} });
   
   if (!result.success || !result.data) {
     return [];
@@ -121,7 +124,7 @@ export async function createScenario(scenario: Omit<Scenario, 'id' | 'created' |
   const id = `scn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
   
-  const result = await window.electronAPI.database.op('scenarios:create', {
+  const result = await DatabaseService.op('scenarios:create', {
     id,
     name: scenario.name,
     description: scenario.description,
@@ -159,7 +162,7 @@ export async function updateScenario(id: string, updates: Partial<Scenario>): Pr
   
   const updatedScenario = { ...scenario, ...updates, updated: now };
   
-  const result = await window.electronAPI.database.op('scenarios:update', {
+  const result = await DatabaseService.op('scenarios:update', {
     id,
     fields: {
       name: updatedScenario.name,
@@ -184,7 +187,7 @@ export async function updateScenario(id: string, updates: Partial<Scenario>): Pr
 }
 
 export async function deleteScenario(id: string): Promise<void> {
-  const result = await window.electronAPI.database.op('scenarios:delete', { id });
+  const result = await DatabaseService.op('scenarios:delete', { id });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to delete scenario');
@@ -225,7 +228,7 @@ export async function updateSession(id: string, updates: Partial<Session>): Prom
     fields.status = updates.status;
   }
 
-  const result = await window.electronAPI.database.op('sessions:update', { id, fields });
+  const result = await DatabaseService.op('sessions:update', { id, fields });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to update session');
@@ -233,7 +236,7 @@ export async function updateSession(id: string, updates: Partial<Session>): Prom
 }
 
 export async function getSession(id: string): Promise<Session | null> {
-  const result = await window.electronAPI.database.op('sessions:get', { id });
+  const result = await DatabaseService.op('sessions:get', { id });
   
   if (!result.success || !result.data || result.data.length === 0) {
     return null;
@@ -248,7 +251,7 @@ export async function getSession(id: string): Promise<Session | null> {
 }
 
 export async function listSessions(scenarioId?: string): Promise<Session[]> {
-  const result = await window.electronAPI.database.op('sessions:list', { scenarioId });
+  const result = await DatabaseService.op('sessions:list', { scenarioId });
   
   if (!result.success || !result.data) {
     return [];
@@ -263,7 +266,7 @@ export async function listSessions(scenarioId?: string): Promise<Session[]> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  const result = await window.electronAPI.database.op('sessions:delete', { id });
+  const result = await DatabaseService.op('sessions:delete', { id });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to delete session');
@@ -280,10 +283,10 @@ const SECRET_PREF_KEYS = ['sttApiKey', 'ttsApiKey', 'ollamaApiKey'];
 
 export async function getPreference(key: string): Promise<string | null> {
   if (SECRET_PREF_KEYS.includes(key)) {
-    const value = await window.electronAPI.secrets.get(key);
+    const value = await PreferenceService.get(key);
     return value || null;
   }
-  const result = await window.electronAPI.database.op('prefs:get', { key });
+  const result = await DatabaseService.op('prefs:get', { key });
 
   if (!result.success || !result.data || result.data.length === 0) {
     return null;
@@ -294,11 +297,11 @@ export async function getPreference(key: string): Promise<string | null> {
 
 export async function setPreference(key: string, value: string): Promise<void> {
   if (SECRET_PREF_KEYS.includes(key)) {
-    const result = await window.electronAPI.secrets.set(key, value);
+    const result = await PreferenceService.set(key, value);
     if (!result.success) throw new Error(result.error || 'Failed to store API key');
     return;
   }
-  const result = await window.electronAPI.database.op('prefs:set', { key, value });
+  const result = await DatabaseService.op('prefs:set', { key, value });
 
   if (!result.success) {
     throw new Error(result.error || 'Failed to set preference');
@@ -306,7 +309,7 @@ export async function setPreference(key: string, value: string): Promise<void> {
 }
 
 export async function getAllPreferences(): Promise<Record<string, string>> {
-  const result = await window.electronAPI.database.op('prefs:getAll');
+  const result = await DatabaseService.op('prefs:getAll');
 
   if (!result.success || !result.data) {
     return {};
@@ -320,7 +323,7 @@ export async function getAllPreferences(): Promise<Record<string, string>> {
   // Replace ciphertext with decrypted values for the key prefs.
   for (const key of SECRET_PREF_KEYS) {
     if (preferences[key] !== undefined) {
-      preferences[key] = await window.electronAPI.secrets.get(key);
+      preferences[key] = await PreferenceService.get(key);
     }
   }
 
@@ -346,7 +349,7 @@ export async function exportScenario(scenarioId: string, fileName?: string): Pro
   };
 
   const defaultFileName = fileName || `${scenario.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}.json`;
-  const result = await window.electronAPI.dialog.saveFile(defaultFileName);
+  const result = await AppService.saveFile(defaultFileName);
   
   if (!result.canceled && result.filePath) {
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -376,7 +379,7 @@ export async function exportScenarios(scenarioIds: string[], fileName?: string):
   };
 
   const defaultFileName = fileName || `scenarios-${new Date().toISOString().split('T')[0]}.json`;
-  const result = await window.electronAPI.dialog.saveFile(defaultFileName);
+  const result = await AppService.saveFile(defaultFileName);
   
   if (!result.canceled && result.filePath) {
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -419,7 +422,7 @@ export async function exportPackage(packId: string, fileName?: string): Promise<
   };
 
   const defaultFileName = fileName || `${pack.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}.json`;
-  const result = await window.electronAPI.dialog.saveFile(defaultFileName);
+  const result = await AppService.saveFile(defaultFileName);
   
   if (!result.canceled && result.filePath) {
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -551,7 +554,7 @@ export async function exportData(): Promise<void> {
     preferences
   };
   
-  const result = await window.electronAPI.dialog.saveFile('talk-buddy-export.json');
+  const result = await AppService.saveFile('talk-buddy-export.json');
   
   if (!result.canceled && result.filePath) {
     // In a real implementation, we'd need to write this through IPC
@@ -600,19 +603,19 @@ export async function importData(fileContent: string): Promise<void> {
 
 // Restore default scenarios
 export async function restoreDefaultScenarios(): Promise<{ success: boolean, restoredCount?: number, error?: string }> {
-  const result = await window.electronAPI.scenarios.restoreDefaults();
+  const result = await AppService.restoreDefaultScenarios();
   return result;
 }
 
 // Reset database (clear all data and restore defaults)
 export async function resetDatabase(): Promise<{ success: boolean, error?: string }> {
-  const result = await window.electronAPI.database.reset();
+  const result = await DatabaseService.reset();
   return result;
 }
 
 // Pack functions
 export async function getPack(id: string): Promise<Pack | null> {
-  const result = await window.electronAPI.database.op('packs:get', { id });
+  const result = await DatabaseService.op('packs:get', { id });
   
   if (!result.success || !result.data || result.data.length === 0) {
     return null;
@@ -626,7 +629,7 @@ export async function getPack(id: string): Promise<Pack | null> {
 }
 
 export async function listPacks(): Promise<Pack[]> {
-  const result = await window.electronAPI.database.op('packs:list');
+  const result = await DatabaseService.op('packs:list');
   
   if (!result.success || !result.data) {
     return [];
@@ -659,7 +662,7 @@ export async function createPack(pack: Omit<Pack, 'id' | 'created' | 'updated'>)
   const id = `pack_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
   
-  const result = await window.electronAPI.database.op('packs:create', {
+  const result = await DatabaseService.op('packs:create', {
     id,
     name: pack.name,
     description: pack.description || null,
@@ -694,7 +697,7 @@ export async function updatePack(id: string, updates: Partial<Pack>): Promise<Pa
   
   const updatedPack = { ...pack, ...updates, updated: now };
   
-  const result = await window.electronAPI.database.op('packs:update', {
+  const result = await DatabaseService.op('packs:update', {
     id,
     fields: {
       name: updatedPack.name,
@@ -716,7 +719,7 @@ export async function updatePack(id: string, updates: Partial<Pack>): Promise<Pa
 }
 
 export async function deletePack(id: string): Promise<void> {
-  const result = await window.electronAPI.database.op('packs:delete', { id });
+  const result = await DatabaseService.op('packs:delete', { id });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to delete pack');
@@ -727,7 +730,7 @@ export async function deletePack(id: string): Promise<void> {
 export async function addScenarioToPack(packId: string, scenarioId: string, orderIndex: number = 0): Promise<void> {
   const now = new Date().toISOString();
   
-  const result = await window.electronAPI.database.op('packScenarios:add', {
+  const result = await DatabaseService.op('packScenarios:add', {
     packId,
     scenarioId,
     orderIndex,
@@ -740,7 +743,7 @@ export async function addScenarioToPack(packId: string, scenarioId: string, orde
 }
 
 export async function removeScenarioFromPack(packId: string, scenarioId: string): Promise<void> {
-  const result = await window.electronAPI.database.op('packScenarios:remove', { packId, scenarioId });
+  const result = await DatabaseService.op('packScenarios:remove', { packId, scenarioId });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to remove scenario from pack');
@@ -748,7 +751,7 @@ export async function removeScenarioFromPack(packId: string, scenarioId: string)
 }
 
 export async function getPackScenarios(packId: string): Promise<Scenario[]> {
-  const result = await window.electronAPI.database.op('packScenarios:listScenarios', { packId });
+  const result = await DatabaseService.op('packScenarios:listScenarios', { packId });
   
   if (!result.success || !result.data) {
     return [];
@@ -762,7 +765,7 @@ export async function getPackScenarios(packId: string): Promise<Scenario[]> {
 }
 
 export async function getScenarioPacks(scenarioId: string): Promise<Pack[]> {
-  const result = await window.electronAPI.database.op('packScenarios:listPacks', { scenarioId });
+  const result = await DatabaseService.op('packScenarios:listPacks', { scenarioId });
   
   if (!result.success || !result.data) {
     return [];
@@ -775,7 +778,7 @@ export async function getScenarioPacks(scenarioId: string): Promise<Pack[]> {
 }
 
 export async function updatePackScenarioOrder(packId: string, scenarioId: string, newOrderIndex: number): Promise<void> {
-  const result = await window.electronAPI.database.op('packScenarios:updateOrder', {
+  const result = await DatabaseService.op('packScenarios:updateOrder', {
     packId,
     scenarioId,
     orderIndex: newOrderIndex
@@ -798,7 +801,7 @@ export async function createSessionPack(packId: string): Promise<SessionPack> {
   const now = new Date().toISOString();
   
   // Create the session pack
-  const result = await window.electronAPI.database.op('sessionPacks:create', {
+  const result = await DatabaseService.op('sessionPacks:create', {
     id: sessionPackId,
     packId,
     name: pack.name,
@@ -818,7 +821,7 @@ export async function createSessionPack(packId: string): Promise<SessionPack> {
   // Create session slots for each scenario in the pack
   for (const scenario of scenarios) {
     const sessionId = `ses_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    await window.electronAPI.database.op('sessions:createInPack', {
+    await DatabaseService.op('sessions:createInPack', {
       id: sessionId,
       scenarioId: scenario.id,
       sessionPackId,
@@ -839,7 +842,7 @@ export async function createSessionPack(packId: string): Promise<SessionPack> {
 }
 
 export async function getSessionPack(id: string): Promise<SessionPack | null> {
-  const result = await window.electronAPI.database.op('sessionPacks:get', { id });
+  const result = await DatabaseService.op('sessionPacks:get', { id });
   
   if (!result.success || !result.data || result.data.length === 0) {
     return null;
@@ -853,7 +856,7 @@ export async function getSessionPack(id: string): Promise<SessionPack | null> {
 }
 
 export async function listSessionPacks(): Promise<SessionPack[]> {
-  const result = await window.electronAPI.database.op('sessionPacks:list');
+  const result = await DatabaseService.op('sessionPacks:list');
   
   if (!result.success || !result.data) {
     return [];
@@ -887,7 +890,7 @@ export async function listSessionPacksWithSessions(): Promise<SessionPackWithSes
 }
 
 export async function getSessionPackSessions(sessionPackId: string): Promise<Session[]> {
-  const result = await window.electronAPI.database.op('sessions:listByPack', { sessionPackId });
+  const result = await DatabaseService.op('sessions:listByPack', { sessionPackId });
   
   if (!result.success || !result.data) {
     return [];
@@ -901,7 +904,7 @@ export async function getSessionPackSessions(sessionPackId: string): Promise<Ses
 }
 
 export async function deleteSessionPack(id: string): Promise<void> {
-  const result = await window.electronAPI.database.op('sessionPacks:delete', { id });
+  const result = await DatabaseService.op('sessionPacks:delete', { id });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to delete session pack');
@@ -912,7 +915,7 @@ export async function deleteSessionPack(id: string): Promise<void> {
 // Enhanced session functions for new workflow
 export async function startSessionFromPack(packId: string, scenarioId: string): Promise<{ sessionPack: SessionPack; session: Session }> {
   // Check if a session pack already exists for this practice pack
-  const existingSessionPacks = await window.electronAPI.database.op('sessionPacks:getByPack', { packId });
+  const existingSessionPacks = await DatabaseService.op('sessionPacks:getByPack', { packId });
 
   let sessionPack: SessionPack;
   
@@ -928,7 +931,7 @@ export async function startSessionFromPack(packId: string, scenarioId: string): 
   }
 
   // Find the session for this scenario in the session pack
-  const sessionResult = await window.electronAPI.database.op('sessions:findInPack', {
+  const sessionResult = await DatabaseService.op('sessions:findInPack', {
     sessionPackId: sessionPack.id,
     scenarioId
   });
@@ -941,7 +944,7 @@ export async function startSessionFromPack(packId: string, scenarioId: string): 
   const now = new Date().toISOString();
 
   // Update session to active status and set start time if not already started
-  await window.electronAPI.database.op('sessions:activate', {
+  await DatabaseService.op('sessions:activate', {
     id: sessionData.id,
     status: 'active',
     now
@@ -968,7 +971,7 @@ export async function startStandaloneSession(scenarioId: string): Promise<Sessio
   const sessionId = `ses_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
   
-  const result = await window.electronAPI.database.op('sessions:createStandalone', {
+  const result = await DatabaseService.op('sessions:createStandalone', {
     id: sessionId,
     scenarioId,
     startTime: now,
@@ -993,7 +996,7 @@ export async function startStandaloneSession(scenarioId: string): Promise<Sessio
 
 // Archive functions
 export async function listArchivedScenarios(): Promise<Scenario[]> {
-  const result = await window.electronAPI.database.op('scenarios:listArchived');
+  const result = await DatabaseService.op('scenarios:listArchived');
   
   if (!result.success || !result.data) {
     return [];
@@ -1008,7 +1011,7 @@ export async function listArchivedScenarios(): Promise<Scenario[]> {
 }
 
 export async function listArchivedPacks(): Promise<Pack[]> {
-  const result = await window.electronAPI.database.op('packs:listArchived');
+  const result = await DatabaseService.op('packs:listArchived');
   
   if (!result.success || !result.data) {
     return [];
@@ -1023,7 +1026,7 @@ export async function listArchivedPacks(): Promise<Pack[]> {
 
 export async function archiveScenario(id: string): Promise<void> {
   const now = new Date().toISOString();
-  const result = await window.electronAPI.database.op('scenarios:archive', { id, updated: now });
+  const result = await DatabaseService.op('scenarios:archive', { id, updated: now });
 
   if (!result.success) {
     throw new Error(result.error || 'Failed to archive scenario');
@@ -1032,7 +1035,7 @@ export async function archiveScenario(id: string): Promise<void> {
 
 export async function unarchiveScenario(id: string): Promise<void> {
   const now = new Date().toISOString();
-  const result = await window.electronAPI.database.op('scenarios:unarchive', { id, updated: now });
+  const result = await DatabaseService.op('scenarios:unarchive', { id, updated: now });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to unarchive scenario');
@@ -1041,7 +1044,7 @@ export async function unarchiveScenario(id: string): Promise<void> {
 
 export async function archivePack(id: string): Promise<void> {
   const now = new Date().toISOString();
-  const result = await window.electronAPI.database.op('packs:archive', { id, updated: now });
+  const result = await DatabaseService.op('packs:archive', { id, updated: now });
 
   if (!result.success) {
     throw new Error(result.error || 'Failed to archive pack');
@@ -1050,7 +1053,7 @@ export async function archivePack(id: string): Promise<void> {
 
 export async function unarchivePack(id: string): Promise<void> {
   const now = new Date().toISOString();
-  const result = await window.electronAPI.database.op('packs:unarchive', { id, updated: now });
+  const result = await DatabaseService.op('packs:unarchive', { id, updated: now });
   
   if (!result.success) {
     throw new Error(result.error || 'Failed to unarchive pack');
@@ -1061,7 +1064,7 @@ export async function bulkArchiveScenarios(ids: string[]): Promise<void> {
   const now = new Date().toISOString();
   
   for (const id of ids) {
-    const result = await window.electronAPI.database.op('scenarios:archive', { id, updated: now });
+    const result = await DatabaseService.op('scenarios:archive', { id, updated: now });
 
     if (!result.success) {
       throw new Error(result.error || `Failed to archive scenario ${id}`);
@@ -1073,7 +1076,7 @@ export async function bulkArchivePacks(ids: string[]): Promise<void> {
   const now = new Date().toISOString();
   
   for (const id of ids) {
-    const result = await window.electronAPI.database.op('packs:archive', { id, updated: now });
+    const result = await DatabaseService.op('packs:archive', { id, updated: now });
 
     if (!result.success) {
       throw new Error(result.error || `Failed to archive pack ${id}`);
